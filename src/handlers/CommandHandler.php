@@ -3,27 +3,48 @@
 namespace JosskiTools\Handlers;
 
 use JosskiTools\Utils\TelegramBot;
+use JosskiTools\Utils\Logger;
+use JosskiTools\Utils\UserLogger;
+use JosskiTools\Utils\UserManager;
 use JosskiTools\Helpers\KeyboardHelper;
 
 /**
  * Command Handler - Handle all bot commands
  */
 class CommandHandler {
-    
+
     private $bot;
     private $sessionManager;
     private $config;
-    
+    private $adminHandler;
+
     public function __construct($bot, $sessionManager, $config) {
         $this->bot = $bot;
         $this->sessionManager = $sessionManager;
         $this->config = $config;
+
+        // Initialize logging
+        Logger::init($config['directories']['logs'] ?? null);
+        UserLogger::init($config['directories']['logs'] ?? null);
+        UserManager::init();
+
+        // Initialize admin handler
+        $this->adminHandler = new AdminHandler($bot, $sessionManager, $config);
     }
     
     /**
      * Handle /start command
      */
     public function handleStart($chatId, $userId, $username, $chatType = 'private') {
+        Logger::info("Start command", ['user_id' => $userId, 'chat_type' => $chatType]);
+        UserLogger::logCommand($userId, '/start');
+
+        // Register/update user
+        UserManager::addUser($userId, [
+            'username' => $username,
+            'chat_type' => $chatType
+        ]);
+
         // Clear any previous session
         $this->sessionManager->clearSession($userId);
         
@@ -120,6 +141,7 @@ class CommandHandler {
      * Handle /help command
      */
     public function handleHelp($chatId) {
+        UserLogger::logCommand($chatId, '/help');
         $message = "📚 *Josski Tools Bot - Help*\n\n";
         $message .= "🎮 *NAVIGATION*\n";
         $message .= "• Gunakan keyboard button di bawah\n";
@@ -156,6 +178,7 @@ class CommandHandler {
      * Handle /menu command
      */
     public function handleMenu($chatId) {
+        UserLogger::logCommand($chatId, '/menu');
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '📥 Downloader', 'callback_data' => 'menu_downloader']],
@@ -175,12 +198,18 @@ class CommandHandler {
      * Handle /codex command (hidden feature)
      */
     public function handleCodex($chatId, $userId, $args) {
+        UserLogger::logCommand($userId, '/codex', ['args_provided' => !empty($args)]);
         $key = trim($args);
-        
+
         if ($key !== $this->config['secret_key']) {
+            Logger::warning("Invalid codex key attempt", ['user_id' => $userId]);
+            UserLogger::logError($userId, "Invalid codex key");
             $this->bot->sendMessage($chatId, "❌ Invalid secret key!\n\nUsage: `/codex JSK`", 'Markdown');
             return;
         }
+
+        Logger::info("Codex access granted", ['user_id' => $userId]);
+        UserLogger::log($userId, "Codex access granted");
         
         // Grant access to user
         $this->sessionManager->setState($userId, 'codex_access', ['activated' => true]);
@@ -196,11 +225,15 @@ class CommandHandler {
      * Handle /ekstrakhar command (hidden feature)
      */
     public function handleEkstrakhar($chatId, $userId) {
+        UserLogger::logCommand($userId, '/ekstrakhar');
+
         // Check if user has codex access
         $session = $this->sessionManager->getSession($userId);
         $hasAccess = isset($session['data']['activated']) && $session['data']['activated'] === true;
-        
+
         if (!$hasAccess) {
+            Logger::warning("Ekstrakhar access denied - no codex", ['user_id' => $userId]);
+            UserLogger::logError($userId, "Ekstrakhar access denied");
             $message = "🔒 *Access Denied*\n\n";
             $message .= "You need to activate this feature first!\n\n";
             $message .= "Use: `/codex <secret_key>`\n\n";
@@ -209,7 +242,10 @@ class CommandHandler {
             $this->bot->sendMessage($chatId, $message, 'Markdown');
             return;
         }
-        
+
+        Logger::info("HAR extractor activated", ['user_id' => $userId]);
+        UserLogger::logHarExtraction($userId, "Extractor activated");
+
         $this->sessionManager->setState($userId, 'awaiting_har_file', ['activated' => true]);
         
         $message = "✅ *HAR Extractor Ready*\n\n";
@@ -226,34 +262,125 @@ class CommandHandler {
      * Handle /cancel command
      */
     public function handleCancel($chatId, $userId) {
+        UserLogger::logCommand($userId, '/cancel');
         $this->sessionManager->clearState($userId);
-        
+
         $message = "❌ *Operation Cancelled*\n\n";
         $message .= "All pending operations have been cancelled.\n\n";
         $message .= "Use /help to see available commands.";
-        
+
         $keyboard = KeyboardHelper::getMainKeyboard();
         $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
     }
-    
+
+    // ==========================================
+    // ADMIN COMMANDS
+    // ==========================================
+
     /**
-     * Log user activity
+     * Handle /admin command
      */
-    private function logUserActivity($userId, $username, $command) {
-        // Stats manager not needed in modular version
-        // global $statsManager;
-        
-        // Logging removed for modular version
-        return;
-        
-        $logData = [
-            'user_id' => $userId,
-            'username' => $username ?? 'Unknown',
-            'command' => $command,
-            'timestamp' => date('Y-m-d H:i:s')
-        ];
-        
-        $logFile = __DIR__ . '/../../logs/user_activity.log';
-        @file_put_contents($logFile, json_encode($logData) . "\n", FILE_APPEND);
+    public function handleAdmin($chatId, $userId) {
+        $this->adminHandler->showPanel($chatId, $userId);
     }
+
+    /**
+     * Handle /userstats command
+     */
+    public function handleUserStats($chatId, $userId) {
+        $this->adminHandler->showUserStats($chatId, $userId);
+    }
+
+    /**
+     * Handle /broadcast command
+     */
+    public function handleBroadcast($chatId, $userId) {
+        $this->adminHandler->initiateBroadcast($chatId, $userId, 'general');
+    }
+
+    /**
+     * Handle /maintenance command
+     */
+    public function handleMaintenance($chatId, $userId) {
+        $this->adminHandler->initiateBroadcast($chatId, $userId, 'maintenance');
+    }
+
+    /**
+     * Handle /promo command
+     */
+    public function handlePromo($chatId, $userId) {
+        $this->adminHandler->initiateBroadcast($chatId, $userId, 'promo');
+    }
+
+    /**
+     * Handle /blockuser command
+     */
+    public function handleBlockUser($chatId, $userId, $args) {
+        $targetUserId = (int)trim($args);
+
+        if (empty($targetUserId)) {
+            $this->bot->sendMessage($chatId, "Usage: /blockuser <user_id>");
+            return;
+        }
+
+        $this->adminHandler->blockUser($chatId, $userId, $targetUserId);
+    }
+
+    /**
+     * Handle /unblockuser command
+     */
+    public function handleUnblockUser($chatId, $userId, $args) {
+        $targetUserId = (int)trim($args);
+
+        if (empty($targetUserId)) {
+            $this->bot->sendMessage($chatId, "Usage: /unblockuser <user_id>");
+            return;
+        }
+
+        $this->adminHandler->unblockUser($chatId, $userId, $targetUserId);
+    }
+
+    /**
+     * Handle /userlog command
+     */
+    public function handleUserLog($chatId, $userId, $args) {
+        $targetUserId = (int)trim($args);
+
+        if (empty($targetUserId)) {
+            $this->bot->sendMessage($chatId, "Usage: /userlog <user_id>");
+            return;
+        }
+
+        $this->adminHandler->viewUserLog($chatId, $userId, $targetUserId);
+    }
+
+    /**
+     * Handle /exportusers command
+     */
+    public function handleExportUsers($chatId, $userId) {
+        $this->adminHandler->exportUsers($chatId, $userId);
+    }
+
+    /**
+     * Handle /viewlogs command
+     */
+    public function handleViewLogs($chatId, $userId, $args = '') {
+        $lines = !empty($args) ? (int)$args : 50;
+        $this->adminHandler->viewLogs($chatId, $userId, $lines);
+    }
+
+    /**
+     * Handle /cleanlogs command
+     */
+    public function handleCleanLogs($chatId, $userId) {
+        $this->adminHandler->cleanLogs($chatId, $userId);
+    }
+
+    /**
+     * Check if user is admin
+     */
+    public function isAdmin($userId) {
+        return $this->adminHandler->isAdmin($userId);
+    }
+
 }

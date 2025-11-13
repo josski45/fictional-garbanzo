@@ -1,5 +1,236 @@
 # Changes Made - Bot Improvements
 
+## Version 2.2.0 - November 13, 2025
+
+### 🚀 MAJOR UPDATE: NekoLabs API Migration & Logging System
+
+#### 🌟 NekoLabs API Integration
+**Complete migration from multiple API clients to single all-in-one API**
+
+##### New Features:
+- ✅ **NekoLabsClient** - Universal API client for ALL platforms
+- ✅ **Auto-detect platform** dari URL (TikTok, YouTube, Instagram, Facebook, dll)
+- ✅ **Multi-version support** - v1, v2, v3, v4 API versions
+- ✅ **Retry mechanism** dengan exponential backoff
+- ✅ **Rate limit handling** otomatis
+- ✅ **Error recovery** yang lebih baik
+
+##### Supported Platforms (12+):
+- TikTok, YouTube, Instagram, Facebook
+- Twitter/X, Spotify, SoundCloud
+- CapCut, Pinterest, Reddit, Threads, SnackVideo
+
+##### Files Created:
+- `src/api/NekoLabsClient.php` - API client
+- `src/responses/NekoLabsResponseHandler.php` - Response handler
+
+---
+
+#### 📝 Complete Logging System
+**Structured logging untuk debugging & monitoring**
+
+##### Application Logging:
+- ✅ **Logger class** - Central logging system
+- ✅ Log levels: ERROR, WARNING, INFO, DEBUG
+- ✅ API request/response logging
+- ✅ Exception tracking dengan stack trace
+- ✅ Daily log files: `logs/app-{date}.log`
+- ✅ Auto-cleanup old logs (30 days)
+
+##### Per-User Activity Logging:
+- ✅ **UserLogger class** - Track setiap user activity
+- ✅ Individual log files: `logs/{user_id}.txt`
+- ✅ Track commands, downloads, errors
+- ✅ HAR extraction logging
+- ✅ Activity count & recent activity functions
+- ✅ Auto-cleanup old logs (90 days)
+
+##### Files Created:
+- `src/utils/Logger.php` - Application logger
+- `src/utils/UserLogger.php` - User activity logger
+
+---
+
+#### 👥 User Management System
+**Complete user tracking & broadcast ready**
+
+##### Features:
+- ✅ **Auto-register** users saat pertama kali pakai bot
+- ✅ Track first_seen, last_seen, request_count
+- ✅ User blocking/unblocking
+- ✅ Admin management
+- ✅ User statistics
+- ✅ Export to CSV
+- ✅ **Broadcast ready** - Get all active user IDs
+
+##### Data Storage:
+- `data/users.json` - User database
+- JSON format untuk easy manipulation
+- Includes username, chat_type, platform preferences
+
+##### Files Created:
+- `src/utils/UserManager.php` - User management class
+
+---
+
+#### 🏗️ Code Refactoring
+
+##### DownloadHandler:
+- ✅ Completely rewritten untuk NekoLabs API
+- ✅ Removed dependency on Ferdev API
+- ✅ Added comprehensive logging
+- ✅ Improved error messages
+- ✅ Better retry logic
+- ✅ Auto user registration
+
+##### CommandHandler:
+- ✅ Added Logger integration
+- ✅ Added UserLogger for command tracking
+- ✅ Auto user registration
+- ✅ Better error handling
+- ✅ Removed old logging code
+
+##### MessageHandler:
+- ✅ Added Logger integration
+- ✅ Added UserLogger for message tracking
+- ✅ Auto user registration
+- ✅ Cleaner code structure
+
+---
+
+#### 🔧 Configuration Updates
+
+##### config/config.php:
+- ✅ Added `NEKOLABS_API_VERSION` setting
+- ✅ Added `data` directory configuration
+- ✅ Marked Ferdev API as DEPRECATED
+
+##### New Files:
+- `.env.example` - Environment configuration template
+- `.gitignore` - Git ignore rules (logs, data, temp files)
+
+---
+
+#### 📚 Documentation
+
+##### New Documentation Files:
+- ✅ `MIGRATION.md` - Complete migration guide
+  - Overview of all changes
+  - Usage examples
+  - API version switching
+  - Troubleshooting guide
+  - Benefits comparison
+
+##### Documentation Updates:
+- ✅ Added NekoLabs API documentation
+- ✅ Added logging system guide
+- ✅ Added user management examples
+- ✅ Added broadcast preparation guide
+
+---
+
+#### 📂 Directory Structure
+
+##### New Directories:
+```
+fictional-garbanzo/
+├── logs/              [NEW] - Application & user logs
+├── data/              [NEW] - User database & app data
+├── src/
+│   ├── api/
+│   │   └── NekoLabsClient.php         [NEW]
+│   ├── responses/
+│   │   └── NekoLabsResponseHandler.php [NEW]
+│   └── utils/
+│       ├── Logger.php                 [NEW]
+│       ├── UserLogger.php             [NEW]
+│       └── UserManager.php            [NEW]
+```
+
+---
+
+#### 🗑️ Deprecated
+
+##### Ferdev API:
+- ❌ Marked as DEPRECATED
+- ⚠️ Still functional but not recommended
+- 🔄 Will be removed in next major version
+- 📦 Located: `src/api/ferdev_backup/`
+
+---
+
+#### 🎯 Benefits
+
+##### Before:
+- ❌ Multiple API clients per platform
+- ❌ Unstructured logging with error_log()
+- ❌ No user tracking
+- ❌ Hard to debug issues
+- ❌ No broadcast capability
+
+##### After:
+- ✅ Single API for ALL platforms
+- ✅ Structured logging (app + per-user)
+- ✅ Complete user management
+- ✅ Easy debugging dengan detailed logs
+- ✅ Broadcast ready
+- ✅ Better error handling
+- ✅ Auto-retry & rate limiting
+- ✅ Modular & maintainable code
+
+---
+
+#### 📊 Statistics
+
+##### Lines of Code:
+- **Added:** ~1,200 lines
+- **Modified:** ~300 lines
+- **Files Created:** 8 new files
+- **Files Updated:** 5 files
+
+##### Code Quality:
+- ✅ PSR-4 autoloading compliant
+- ✅ Proper namespacing
+- ✅ Comprehensive documentation
+- ✅ Error handling throughout
+- ✅ Logging at all critical points
+
+---
+
+#### ⚠️ Breaking Changes
+
+**None!** Fully backwards compatible.
+
+- ✅ All existing commands still work
+- ✅ Old API calls automatically migrated
+- ✅ No user action required
+- ✅ Seamless transition
+
+---
+
+#### 🚀 Upgrade Instructions
+
+1. Pull latest code
+2. Create directories:
+   ```bash
+   mkdir -p logs data
+   chmod 755 logs data
+   ```
+3. Copy `.env.example` to `.env` and configure
+4. Optional: Set `NEKOLABS_API_VERSION=v1` (or v2, v3, v4)
+5. Test: Send any download link to bot
+
+---
+
+#### 📝 Notes
+
+- Logs are auto-managed (old logs deleted after 30/90 days)
+- User data is private (excluded from git)
+- API version can be changed anytime without code changes
+- All error logs include context for debugging
+
+---
+
 ## Version 2.1.0 - November 11, 2025
 
 ### 🔧 Anti-Flood Fix for Loading Bar

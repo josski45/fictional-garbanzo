@@ -106,19 +106,23 @@ return [
     // Default encryption key untuk HAR decryption
     'default_encryption_key' => env('DEFAULT_ENCRYPTION_KEY', 'Match&Ocean'),
     
-    // Ferdev API Key
+    // Ferdev API Key (DEPRECATED - Use NekoLabs instead)
     'FERDEV_API_KEY' => env('FERDEV_API_KEY', ''),
-    
+
+    // NekoLabs API Settings
+    'NEKOLABS_API_VERSION' => env('NEKOLABS_API_VERSION', 'v1'),
+
     // Admin User IDs (comma separated)
     'admin_ids' => array_filter(array_map('intval', explode(',', env('ADMIN_IDS', '')))),
-    
+
     // Directories
     'directories' => [
         'temp' => __DIR__ . '/../' . env('TEMP_DIR', 'temp'),
         'downloads' => __DIR__ . '/../downloads',
         'results' => __DIR__ . '/../results',
         'sessions' => __DIR__ . '/../' . env('SESSIONS_DIR', 'sessions'),
-        'logs' => __DIR__ . '/../logs'
+        'logs' => __DIR__ . '/../logs',
+        'data' => __DIR__ . '/../data'
     ],
     
     // File size limits (in bytes)

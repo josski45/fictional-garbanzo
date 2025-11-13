@@ -1,0 +1,523 @@
+<?php
+
+namespace JosskiTools\Handlers;
+
+use JosskiTools\Utils\TelegramBot;
+use JosskiTools\Utils\Logger;
+use JosskiTools\Utils\UserLogger;
+use JosskiTools\Utils\UserManager;
+use JosskiTools\Helpers\KeyboardHelper;
+
+/**
+ * Admin Handler - Handle admin commands and panel
+ */
+class AdminHandler {
+
+    private $bot;
+    private $config;
+    private $sessionManager;
+
+    public function __construct($bot, $sessionManager, $config) {
+        $this->bot = $bot;
+        $this->config = $config;
+        $this->sessionManager = $sessionManager;
+
+        Logger::init($config['directories']['logs'] ?? null);
+        UserLogger::init($config['directories']['logs'] ?? null);
+        UserManager::init();
+    }
+
+    /**
+     * Check if user is admin
+     */
+    public function isAdmin($userId) {
+        $adminIds = $this->config['admin_ids'] ?? [];
+        return in_array((int)$userId, $adminIds);
+    }
+
+    /**
+     * Show admin panel
+     */
+    public function showPanel($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            $this->bot->sendMessage($chatId, "❌ Access denied. Admin only.");
+            Logger::warning("Non-admin tried to access admin panel", ['user_id' => $userId]);
+            return;
+        }
+
+        UserLogger::logCommand($userId, '/admin');
+        Logger::info("Admin panel accessed", ['user_id' => $userId]);
+
+        $stats = UserManager::getStats();
+
+        $message = "👑 **ADMIN PANEL**\n\n";
+        $message .= "📊 **User Statistics:**\n";
+        $message .= "• Total Users: {$stats['total_users']}\n";
+        $message .= "• Active Users: {$stats['active_users']}\n";
+        $message .= "• Blocked Users: {$stats['blocked_users']}\n";
+        $message .= "• Total Requests: {$stats['total_requests']}\n\n";
+        $message .= "🎛️ **Available Commands:**\n\n";
+        $message .= "📢 **Broadcast:**\n";
+        $message .= "/broadcast - Send message to all users\n";
+        $message .= "/maintenance - Send maintenance notice\n";
+        $message .= "/promo - Send promotion message\n\n";
+        $message .= "👥 **User Management:**\n";
+        $message .= "/userstats - Detailed statistics\n";
+        $message .= "/blockuser <id> - Block user\n";
+        $message .= "/unblockuser <id> - Unblock user\n";
+        $message .= "/exportusers - Export to CSV\n\n";
+        $message .= "📝 **Logs:**\n";
+        $message .= "/viewlogs - View recent logs\n";
+        $message .= "/userlog <id> - View user activity\n\n";
+        $message .= "🔧 **System:**\n";
+        $message .= "/testapi - Test NekoLabs API\n";
+        $message .= "/cleanlogs - Clean old logs";
+
+        $keyboard = $this->getAdminKeyboard();
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+    }
+
+    /**
+     * Get admin keyboard
+     */
+    private function getAdminKeyboard() {
+        return [
+            'inline_keyboard' => [
+                [
+                    ['text' => '📢 Broadcast', 'callback_data' => 'admin_broadcast'],
+                    ['text' => '📊 Stats', 'callback_data' => 'admin_stats']
+                ],
+                [
+                    ['text' => '👥 Users', 'callback_data' => 'admin_users'],
+                    ['text' => '📝 Logs', 'callback_data' => 'admin_logs']
+                ],
+                [
+                    ['text' => '🔧 System', 'callback_data' => 'admin_system'],
+                    ['text' => '❌ Close', 'callback_data' => 'admin_close']
+                ]
+            ]
+        ];
+    }
+
+    /**
+     * Show user statistics
+     */
+    public function showUserStats($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $stats = UserManager::getStats();
+        $allUsers = UserManager::getAllUsers();
+
+        // Calculate additional stats
+        $usersToday = 0;
+        $usersThisWeek = 0;
+        $usersThisMonth = 0;
+
+        $now = time();
+        $dayAgo = $now - 86400;
+        $weekAgo = $now - (7 * 86400);
+        $monthAgo = $now - (30 * 86400);
+
+        foreach ($allUsers as $user) {
+            $firstSeen = strtotime($user['first_seen'] ?? '1970-01-01');
+
+            if ($firstSeen >= $dayAgo) $usersToday++;
+            if ($firstSeen >= $weekAgo) $usersThisWeek++;
+            if ($firstSeen >= $monthAgo) $usersThisMonth++;
+        }
+
+        $message = "📊 **DETAILED USER STATISTICS**\n\n";
+        $message .= "👥 **Total Users:** {$stats['total_users']}\n";
+        $message .= "• Active: {$stats['active_users']}\n";
+        $message .= "• Blocked: {$stats['blocked_users']}\n";
+        $message .= "• Admins: {$stats['admin_users']}\n\n";
+        $message .= "📈 **New Users:**\n";
+        $message .= "• Today: {$usersToday}\n";
+        $message .= "• This Week: {$usersThisWeek}\n";
+        $message .= "• This Month: {$usersThisMonth}\n\n";
+        $message .= "📊 **Activity:**\n";
+        $message .= "• Total Requests: {$stats['total_requests']}\n";
+        $message .= "• Avg per User: " . round($stats['total_requests'] / max(1, $stats['total_users']), 1);
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Initiate broadcast
+     */
+    public function initiateBroadcast($chatId, $userId, $type = 'general') {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        UserLogger::logCommand($userId, '/broadcast', ['type' => $type]);
+
+        // Set session state
+        $this->sessionManager->setState($userId, 'awaiting_broadcast', [
+            'type' => $type
+        ]);
+
+        $typeEmoji = [
+            'general' => '📢',
+            'maintenance' => '🔧',
+            'promo' => '🎁'
+        ];
+
+        $emoji = $typeEmoji[$type] ?? '📢';
+
+        $message = "{$emoji} **BROADCAST MESSAGE**\n\n";
+        $message .= "Send the message you want to broadcast to all users.\n\n";
+        $message .= "**Type:** " . ucfirst($type) . "\n";
+        $message .= "**Target:** All active users\n\n";
+        $message .= "You can send:\n";
+        $message .= "• Text message\n";
+        $message .= "• Photo with caption\n";
+        $message .= "• Video with caption\n\n";
+        $message .= "Use /cancel to abort.";
+
+        $keyboard = KeyboardHelper::getCancelKeyboard();
+        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+    }
+
+    /**
+     * Execute broadcast
+     */
+    public function executeBroadcast($chatId, $userId, $message, $messageData = null) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $session = $this->sessionManager->getSession($userId);
+        $type = $session['data']['type'] ?? 'general';
+
+        Logger::info("Broadcast initiated", [
+            'admin_id' => $userId,
+            'type' => $type
+        ]);
+
+        $userIds = UserManager::getActiveUserIds();
+        $totalUsers = count($userIds);
+
+        // Show confirmation first
+        $confirmMsg = "📊 **Broadcast Preview**\n\n";
+        $confirmMsg .= "**Type:** " . ucfirst($type) . "\n";
+        $confirmMsg .= "**Target Users:** {$totalUsers}\n\n";
+        $confirmMsg .= "**Message:**\n{$message}\n\n";
+        $confirmMsg .= "❓ Confirm broadcast?";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '✅ Confirm', 'callback_data' => 'broadcast_confirm'],
+                    ['text' => '❌ Cancel', 'callback_data' => 'broadcast_cancel']
+                ]
+            ]
+        ];
+
+        // Store broadcast data in session
+        $this->sessionManager->setState($userId, 'pending_broadcast', [
+            'type' => $type,
+            'message' => $message,
+            'messageData' => $messageData,
+            'targetUsers' => $userIds
+        ]);
+
+        $this->bot->sendMessage($chatId, $confirmMsg, 'Markdown', $keyboard);
+    }
+
+    /**
+     * Confirm and send broadcast
+     */
+    public function confirmBroadcast($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $session = $this->sessionManager->getSession($userId);
+        $broadcastData = $session['data'] ?? [];
+
+        if (empty($broadcastData['message'])) {
+            $this->bot->sendMessage($chatId, "❌ No broadcast data found.");
+            return;
+        }
+
+        $message = $broadcastData['message'];
+        $targetUsers = $broadcastData['targetUsers'] ?? [];
+        $type = $broadcastData['type'] ?? 'general';
+
+        $totalUsers = count($targetUsers);
+
+        Logger::info("Broadcast confirmed, sending...", [
+            'admin_id' => $userId,
+            'type' => $type,
+            'target_count' => $totalUsers
+        ]);
+
+        // Add broadcast header based on type
+        $header = match($type) {
+            'maintenance' => "🔧 **MAINTENANCE NOTICE**\n\n",
+            'promo' => "🎁 **SPECIAL PROMOTION**\n\n",
+            default => "📢 **ANNOUNCEMENT**\n\n"
+        };
+
+        $fullMessage = $header . $message;
+
+        // Send progress message
+        $progressMsg = $this->bot->sendMessage($chatId, "📤 Sending broadcast...\n\nProgress: 0/{$totalUsers}");
+        $progressMsgId = $progressMsg['result']['message_id'] ?? null;
+
+        $sent = 0;
+        $failed = 0;
+
+        // Send to all users
+        foreach ($targetUsers as $targetUserId) {
+            try {
+                $result = $this->bot->sendMessage($targetUserId, $fullMessage, 'Markdown');
+
+                if ($result['ok'] ?? false) {
+                    $sent++;
+                } else {
+                    $failed++;
+                    Logger::warning("Broadcast failed to user", [
+                        'user_id' => $targetUserId,
+                        'error' => $result['description'] ?? 'Unknown'
+                    ]);
+                }
+
+                // Update progress every 10 users
+                if ($sent % 10 === 0 && $progressMsgId) {
+                    $this->bot->editMessage(
+                        $chatId,
+                        $progressMsgId,
+                        "📤 Sending broadcast...\n\nProgress: {$sent}/{$totalUsers}"
+                    );
+                }
+
+                // Rate limit: 30 messages per second max
+                usleep(50000); // 0.05 second delay
+
+            } catch (\Exception $e) {
+                $failed++;
+                Logger::exception($e, [
+                    'context' => 'broadcast',
+                    'user_id' => $targetUserId
+                ]);
+            }
+        }
+
+        // Final report
+        $reportMsg = "✅ **Broadcast Complete!**\n\n";
+        $reportMsg .= "📊 **Results:**\n";
+        $reportMsg .= "• Sent: {$sent}\n";
+        $reportMsg .= "• Failed: {$failed}\n";
+        $reportMsg .= "• Total: {$totalUsers}\n\n";
+        $reportMsg .= "Success Rate: " . round(($sent / $totalUsers) * 100, 1) . "%";
+
+        $this->bot->sendMessage($chatId, $reportMsg, 'Markdown');
+
+        // Clear session
+        $this->sessionManager->clearState($userId);
+
+        Logger::info("Broadcast completed", [
+            'admin_id' => $userId,
+            'sent' => $sent,
+            'failed' => $failed,
+            'total' => $totalUsers
+        ]);
+    }
+
+    /**
+     * Block user
+     */
+    public function blockUser($chatId, $userId, $targetUserId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $result = UserManager::blockUser($targetUserId);
+
+        if ($result) {
+            $this->bot->sendMessage(
+                $chatId,
+                "✅ User {$targetUserId} has been blocked."
+            );
+
+            Logger::info("User blocked by admin", [
+                'admin_id' => $userId,
+                'target_user' => $targetUserId
+            ]);
+        } else {
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ Failed to block user {$targetUserId}. User may not exist."
+            );
+        }
+    }
+
+    /**
+     * Unblock user
+     */
+    public function unblockUser($chatId, $userId, $targetUserId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $result = UserManager::unblockUser($targetUserId);
+
+        if ($result) {
+            $this->bot->sendMessage(
+                $chatId,
+                "✅ User {$targetUserId} has been unblocked."
+            );
+
+            Logger::info("User unblocked by admin", [
+                'admin_id' => $userId,
+                'target_user' => $targetUserId
+            ]);
+        } else {
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ Failed to unblock user {$targetUserId}. User may not exist."
+            );
+        }
+    }
+
+    /**
+     * View user activity log
+     */
+    public function viewUserLog($chatId, $userId, $targetUserId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $recentActivity = UserLogger::getRecentActivity($targetUserId, 20);
+        $activityCount = UserLogger::getUserActivityCount($targetUserId);
+
+        if (empty($recentActivity)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ No activity found for user {$targetUserId}."
+            );
+            return;
+        }
+
+        $message = "📝 **User Activity Log**\n\n";
+        $message .= "**User ID:** `{$targetUserId}`\n";
+        $message .= "**Total Activities:** {$activityCount}\n\n";
+        $message .= "**Recent Activities (20):**\n";
+        $message .= "```\n";
+        $message .= implode("\n", array_slice($recentActivity, -20));
+        $message .= "\n```";
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Export users to CSV
+     */
+    public function exportUsers($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        try {
+            $filename = UserManager::exportToCsv();
+
+            $this->bot->sendDocument(
+                $chatId,
+                $filename,
+                "📊 Users Export - " . date('Y-m-d H:i:s')
+            );
+
+            // Delete file after sending
+            @unlink($filename);
+
+            Logger::info("Users exported", ['admin_id' => $userId]);
+
+        } catch (\Exception $e) {
+            Logger::exception($e, ['context' => 'export_users']);
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ Failed to export users: " . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * View recent application logs
+     */
+    public function viewLogs($chatId, $userId, $lines = 50) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $logFile = Logger::getTodayLogFile();
+
+        if (!file_exists($logFile)) {
+            $this->bot->sendMessage($chatId, "❌ No logs found for today.");
+            return;
+        }
+
+        $logLines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $recentLogs = array_slice($logLines, -$lines);
+
+        $message = "📝 **Application Logs (Last {$lines} lines)**\n\n";
+        $message .= "```\n";
+        $message .= implode("\n", $recentLogs);
+        $message .= "\n```";
+
+        // Telegram message limit is 4096 chars
+        if (strlen($message) > 4000) {
+            // Send as file instead
+            $tempFile = sys_get_temp_dir() . '/logs-' . time() . '.txt';
+            file_put_contents($tempFile, implode("\n", $recentLogs));
+
+            $this->bot->sendDocument(
+                $chatId,
+                $tempFile,
+                "📝 Application Logs - " . date('Y-m-d H:i:s')
+            );
+
+            @unlink($tempFile);
+        } else {
+            $this->bot->sendMessage($chatId, $message, 'Markdown');
+        }
+    }
+
+    /**
+     * Clean old logs
+     */
+    public function cleanLogs($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        try {
+            $appLogsDeleted = Logger::cleanup(30);
+            $userLogsDeleted = UserLogger::cleanup(90);
+
+            $message = "🧹 **Logs Cleanup Complete**\n\n";
+            $message .= "• App logs deleted: {$appLogsDeleted}\n";
+            $message .= "• User logs deleted: {$userLogsDeleted}\n\n";
+            $message .= "Old logs have been removed.";
+
+            $this->bot->sendMessage($chatId, $message, 'Markdown');
+
+            Logger::info("Logs cleaned by admin", [
+                'admin_id' => $userId,
+                'app_logs' => $appLogsDeleted,
+                'user_logs' => $userLogsDeleted
+            ]);
+
+        } catch (\Exception $e) {
+            Logger::exception($e, ['context' => 'clean_logs']);
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ Failed to clean logs: " . $e->getMessage()
+            );
+        }
+    }
+}
