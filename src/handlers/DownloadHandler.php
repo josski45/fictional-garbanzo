@@ -10,6 +10,7 @@ use JosskiTools\Utils\UserManager;
 use JosskiTools\Utils\RateLimiter;
 use JosskiTools\Utils\DownloadHistory;
 use JosskiTools\Utils\DonationManager;
+use JosskiTools\Utils\ChannelHistory;
 use JosskiTools\Api\NekoLabsClient;
 use JosskiTools\Responses\NekoLabsResponseHandler;
 use JosskiTools\Helpers\ErrorHelper;
@@ -42,6 +43,7 @@ class DownloadHandler {
         RateLimiter::init($config['directories']['data'] ?? null);
         DownloadHistory::init($config['directories']['data'] ?? null);
         DonationManager::init($config['directories']['data'] ?? null);
+        ChannelHistory::init($bot, $config);
     }
 
     /**
@@ -196,6 +198,38 @@ class DownloadHandler {
             // Handle response using NekoLabsResponseHandler
             $responseHandler = new NekoLabsResponseHandler($this->bot);
             $responseHandler->handle($chatId, $result['result'], $loadingMsgId);
+
+            // Forward to user's history channel if setup
+            if (ChannelHistory::hasChannel($chatId)) {
+                try {
+                    // Get first media from result
+                    $firstMedia = $result['result']['medias'][0] ?? null;
+
+                    if ($firstMedia && isset($firstMedia['url'])) {
+                        ChannelHistory::sendToChannel(
+                            $chatId,
+                            $firstMedia['url'],
+                            $firstMedia['type'] ?? 'video',
+                            [
+                                'platform' => $result['result']['source'] ?? 'unknown',
+                                'title' => $result['result']['title'] ?? 'No title',
+                                'url' => $url
+                            ]
+                        );
+
+                        Logger::debug("Forwarded to user's history channel", [
+                            'user_id' => $chatId,
+                            'platform' => $result['result']['source'] ?? 'unknown'
+                        ]);
+                    }
+                } catch (\Exception $e) {
+                    // Log error but don't fail the download
+                    Logger::warning("Failed to forward to history channel", [
+                        'user_id' => $chatId,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
 
         } catch (\Exception $e) {
             Logger::exception($e, [

@@ -5,6 +5,8 @@ namespace JosskiTools\Handlers;
 use JosskiTools\Utils\TelegramBot;
 use JosskiTools\Utils\Logger;
 use JosskiTools\Utils\UserLogger;
+use JosskiTools\Utils\ChannelHistory;
+use JosskiTools\Utils\DownloadHistory;
 use JosskiTools\Api\NekoLabsClient;
 
 /**
@@ -26,6 +28,8 @@ class BulkDownloadHandler {
 
         Logger::init($config['directories']['logs'] ?? null);
         UserLogger::init($config['directories']['logs'] ?? null);
+        ChannelHistory::init($bot, $config);
+        DownloadHistory::init($config['directories']['data'] ?? null);
     }
 
     /**
@@ -106,6 +110,15 @@ class BulkDownloadHandler {
                         'platform' => $result['result']['source'] ?? 'unknown'
                     ]);
 
+                    // Add to download history
+                    DownloadHistory::addDownload(
+                        $userId,
+                        $url,
+                        $result['result']['source'] ?? 'unknown',
+                        $result['result']['title'] ?? null,
+                        $result['result']['type'] ?? null
+                    );
+
                 } else {
                     $failed++;
                     $results[] = [
@@ -155,7 +168,7 @@ class BulkDownloadHandler {
         }
 
         // Send results
-        $this->sendBulkResults($chatId, $results);
+        $this->sendBulkResults($chatId, $userId, $results);
 
         Logger::info("Bulk download completed", [
             'user_id' => $userId,
@@ -168,9 +181,12 @@ class BulkDownloadHandler {
     /**
      * Send bulk download results
      */
-    private function sendBulkResults($chatId, $results) {
+    private function sendBulkResults($chatId, $userId, $results) {
         $successResults = array_filter($results, function($r) { return $r['success']; });
         $failedResults = array_filter($results, function($r) { return !$r['success']; });
+
+        // Check if user has channel setup
+        $hasChannel = ChannelHistory::hasChannel($userId);
 
         // Send successful downloads
         foreach ($successResults as $result) {
@@ -178,6 +194,7 @@ class BulkDownloadHandler {
                 $data = $result['data'];
                 $platform = $data['source'] ?? 'unknown';
                 $title = $data['title'] ?? 'No title';
+                $url = $result['url'];
 
                 // Get first media
                 if (!empty($data['medias'])) {
@@ -197,6 +214,27 @@ class BulkDownloadHandler {
                     } else {
                         // Fallback: send as text
                         $this->bot->sendMessage($chatId, $caption . "\n\n📥 " . $mediaUrl);
+                    }
+
+                    // Forward to channel if setup
+                    if ($hasChannel && $mediaUrl) {
+                        try {
+                            ChannelHistory::sendToChannel(
+                                $userId,
+                                $mediaUrl,
+                                $mediaType,
+                                [
+                                    'platform' => $platform,
+                                    'title' => $title,
+                                    'url' => $url
+                                ]
+                            );
+                        } catch (\Exception $e) {
+                            Logger::warning("Failed to forward bulk item to channel", [
+                                'user_id' => $userId,
+                                'error' => $e->getMessage()
+                            ]);
+                        }
                     }
                 }
 
