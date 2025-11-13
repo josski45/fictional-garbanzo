@@ -489,6 +489,60 @@ class CommandHandler {
         $this->bot->sendMessage($chatId, $message, 'Markdown');
     }
 
+    /**
+     * Handle /setupchannel command
+     */
+    public function handleSetupChannel($chatId, $userId, $args = '') {
+        UserLogger::logCommand($userId, '/setupchannel');
+
+        // Initialize channel history
+        ChannelHistory::init($this->bot, $this->config);
+
+        if (empty($args)) {
+            $message = ChannelHistory::getSetupInstructions();
+            $this->bot->sendMessage($chatId, $message, 'Markdown');
+            return;
+        }
+
+        // User provided channel ID/username
+        $channelId = trim($args);
+
+        // If username provided, convert to ID format
+        if (strpos($channelId, '@') === 0) {
+            // Already in @username format
+        } elseif (is_numeric($channelId)) {
+            // Numeric ID
+            if ($channelId > 0) {
+                $channelId = '-100' . $channelId;  // Convert to channel format
+            }
+        }
+
+        $result = ChannelHistory::setupChannel($userId, $channelId);
+        $this->bot->sendMessage($chatId, $result['message'], 'Markdown');
+    }
+
+    /**
+     * Handle /channelinfo command
+     */
+    public function handleChannelInfo($chatId, $userId) {
+        UserLogger::logCommand($userId, '/channelinfo');
+
+        ChannelHistory::init($this->bot, $this->config);
+        $message = ChannelHistory::getChannelInfo($userId);
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /removechannel command
+     */
+    public function handleRemoveChannel($chatId, $userId) {
+        UserLogger::logCommand($userId, '/removechannel');
+
+        ChannelHistory::init($this->bot, $this->config);
+        $result = ChannelHistory::removeChannel($userId);
+        $this->bot->sendMessage($chatId, $result['message'], 'Markdown');
+    }
+
     // ==========================================
     // ADMIN COMMANDS
     // ==========================================
