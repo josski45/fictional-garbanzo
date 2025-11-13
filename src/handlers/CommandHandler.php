@@ -274,6 +274,222 @@ class CommandHandler {
     }
 
     // ==========================================
+    // USER FEATURES COMMANDS
+    // ==========================================
+
+    /**
+     * Handle /history command
+     */
+    public function handleHistory($chatId, $userId) {
+        UserLogger::logCommand($userId, '/history');
+
+        $history = DownloadHistory::getHistory($userId, 10);
+
+        if (empty($history)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "📭 **Download History**\n\nYou haven't downloaded anything yet!"
+            );
+            return;
+        }
+
+        $message = "📜 **Your Download History**\n\n";
+        foreach ($history as $idx => $item) {
+            $num = $idx + 1;
+            $platform = $item['platform'] ?? 'unknown';
+            $title = $item['title'] ?? 'No title';
+            $date = date('M d, H:i', $item['timestamp'] ?? time());
+
+            $message .= "{$num}. [{$platform}] {$title}\n";
+            $message .= "   📅 {$date}\n\n";
+        }
+
+        $message .= "💡 Use /clearhistory to clear all history";
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /favorites command
+     */
+    public function handleFavorites($chatId, $userId) {
+        UserLogger::logCommand($userId, '/favorites');
+
+        $favorites = DownloadHistory::getFavorites($userId);
+
+        if (empty($favorites)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "⭐ **Your Favorites**\n\nNo favorites yet!\n\n💡 Add favorites using /favorite <url>"
+            );
+            return;
+        }
+
+        $message = "⭐ **Your Favorites** (" . count($favorites) . ")\n\n";
+        foreach ($favorites as $idx => $fav) {
+            $num = $idx + 1;
+            $platform = $fav['platform'] ?? 'unknown';
+            $title = $fav['title'] ?? 'No title';
+            $url = $fav['url'];
+
+            $message .= "{$num}. [{$platform}] {$title}\n";
+            $message .= "   🔗 {$url}\n\n";
+
+            if ($num >= 10) {
+                $message .= "...and " . (count($favorites) - 10) . " more\n";
+                break;
+            }
+        }
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /favorite command
+     */
+    public function handleFavorite($chatId, $userId, $args) {
+        $url = trim($args);
+
+        if (empty($url)) {
+            $this->bot->sendMessage($chatId, "Usage: /favorite <url>");
+            return;
+        }
+
+        UserLogger::logCommand($userId, '/favorite', ['url' => $url]);
+
+        $platform = \JosskiTools\Api\NekoLabsClient::detectPlatform($url);
+        $result = DownloadHistory::addFavorite($userId, $url, $platform);
+
+        $this->bot->sendMessage($chatId, $result['message']);
+    }
+
+    /**
+     * Handle /clearhistory command
+     */
+    public function handleClearHistory($chatId, $userId) {
+        UserLogger::logCommand($userId, '/clearhistory');
+
+        $count = DownloadHistory::clearHistory($userId);
+
+        $this->bot->sendMessage(
+            $chatId,
+            "🗑️ **History Cleared**\n\n" .
+            "Removed {$count} items from your history."
+        );
+    }
+
+    /**
+     * Handle /mystats command
+     */
+    public function handleMyStats($chatId, $userId) {
+        UserLogger::logCommand($userId, '/mystats');
+
+        $stats = DownloadHistory::getStats($userId);
+        $donorBadge = DonationManager::getBadge($userId) ?? '';
+
+        $message = "📊 **Your Statistics** {$donorBadge}\n\n";
+        $message .= "📥 Total Downloads: {$stats['total_downloads']}\n";
+        $message .= "⭐ Total Favorites: {$stats['total_favorites']}\n";
+        $message .= "📈 This Week: {$stats['downloads_this_week']}\n\n";
+
+        if (!empty($stats['platform_breakdown'])) {
+            $message .= "🌐 **Platform Usage:**\n";
+            foreach (array_slice($stats['platform_breakdown'], 0, 5) as $platform => $count) {
+                $message .= "• {$platform}: {$count}\n";
+            }
+        }
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /donate command
+     */
+    public function handleDonate($chatId, $userId) {
+        UserLogger::logCommand($userId, '/donate');
+
+        $message = DonationManager::getDonationInfo();
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '💝 View Leaderboard', 'callback_data' => 'donate_leaderboard']],
+                [['text' => '👤 My Profile', 'callback_data' => 'donate_profile']]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+    }
+
+    /**
+     * Handle /myprofile command (donor profile)
+     */
+    public function handleMyProfile($chatId, $userId) {
+        UserLogger::logCommand($userId, '/myprofile');
+
+        $message = DonationManager::getDonorProfile($userId);
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /leaderboard command
+     */
+    public function handleLeaderboard($chatId, $userId) {
+        UserLogger::logCommand($userId, '/leaderboard');
+
+        $message = DonationManager::getLeaderboard(10);
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /bulk command
+     */
+    public function handleBulk($chatId, $userId, $args) {
+        UserLogger::logCommand($userId, '/bulk');
+
+        if (empty($args)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "📦 **Bulk Download**\n\n" .
+                "Download multiple videos at once!\n\n" .
+                "Usage: `/bulk <url1> <url2> <url3> ...`\n\n" .
+                "Max: 10 URLs per request"
+            );
+            return;
+        }
+
+        // Parse URLs from args
+        $urls = preg_split('/\s+/', $args);
+        $urls = array_filter($urls, function($url) {
+            return filter_var(trim($url), FILTER_VALIDATE_URL);
+        });
+        $urls = array_values($urls);
+
+        if (empty($urls)) {
+            $this->bot->sendMessage($chatId, "❌ No valid URLs found!");
+            return;
+        }
+
+        // Create bulk download handler
+        $bulkHandler = new BulkDownloadHandler($this->bot, $this->config);
+        $bulkHandler->handleBulkDownload($chatId, $userId, $urls);
+    }
+
+    /**
+     * Handle /advstats command (admin only - advanced statistics)
+     */
+    public function handleAdvStats($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            $this->bot->sendMessage($chatId, "❌ Admin only command");
+            return;
+        }
+
+        UserLogger::logCommand($userId, '/advstats');
+
+        $message = AdvancedStats::generateDashboard();
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    // ==========================================
     // ADMIN COMMANDS
     // ==========================================
 

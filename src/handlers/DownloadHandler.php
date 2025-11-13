@@ -7,6 +7,9 @@ use JosskiTools\Utils\StatsManager;
 use JosskiTools\Utils\Logger;
 use JosskiTools\Utils\UserLogger;
 use JosskiTools\Utils\UserManager;
+use JosskiTools\Utils\RateLimiter;
+use JosskiTools\Utils\DownloadHistory;
+use JosskiTools\Utils\DonationManager;
 use JosskiTools\Api\NekoLabsClient;
 use JosskiTools\Responses\NekoLabsResponseHandler;
 use JosskiTools\Helpers\ErrorHelper;
@@ -32,10 +35,13 @@ class DownloadHandler {
         $apiVersion = $config['NEKOLABS_API_VERSION'] ?? 'v1';
         $this->nekoLabsClient = new NekoLabsClient($apiVersion);
 
-        // Initialize logging
+        // Initialize logging and utilities
         Logger::init($config['directories']['logs'] ?? null);
         UserLogger::init($config['directories']['logs'] ?? null);
         UserManager::init();
+        RateLimiter::init($config['directories']['data'] ?? null);
+        DownloadHistory::init($config['directories']['data'] ?? null);
+        DonationManager::init($config['directories']['data'] ?? null);
     }
 
     /**
@@ -53,6 +59,18 @@ class DownloadHandler {
             'username' => null, // Will be updated by CommandHandler if available
             'last_platform' => $platform
         ]);
+
+        // Check rate limit
+        $rateLimitCheck = RateLimiter::check($chatId);
+        if (!$rateLimitCheck['allowed']) {
+            Logger::warning("Rate limit exceeded", [
+                'user_id' => $chatId,
+                'reason' => $rateLimitCheck['reason']
+            ]);
+
+            $this->bot->sendMessage($chatId, $rateLimitCheck['message']);
+            return;
+        }
 
         // Log user activity
         UserLogger::logDownload($chatId, $platform ?? 'auto', $url);
@@ -165,6 +183,15 @@ class DownloadHandler {
                 'source' => $result['result']['source'] ?? 'unknown',
                 'type' => $result['result']['type'] ?? 'unknown'
             ]);
+
+            // Add to download history
+            DownloadHistory::addDownload(
+                $chatId,
+                $url,
+                $result['result']['source'] ?? $platform ?? 'unknown',
+                $result['result']['title'] ?? null,
+                $result['result']['type'] ?? null
+            );
 
             // Handle response using NekoLabsResponseHandler
             $responseHandler = new NekoLabsResponseHandler($this->bot);
