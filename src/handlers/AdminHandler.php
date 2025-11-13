@@ -6,6 +6,7 @@ use JosskiTools\Utils\TelegramBot;
 use JosskiTools\Utils\Logger;
 use JosskiTools\Utils\UserLogger;
 use JosskiTools\Utils\UserManager;
+use JosskiTools\Utils\MaintenanceManager;
 use JosskiTools\Helpers\KeyboardHelper;
 
 /**
@@ -25,6 +26,7 @@ class AdminHandler {
         Logger::init($config['directories']['logs'] ?? null);
         UserLogger::init($config['directories']['logs'] ?? null);
         UserManager::init();
+        MaintenanceManager::init($config['directories']['data'] ?? null);
     }
 
     /**
@@ -57,9 +59,14 @@ class AdminHandler {
         $message .= "• Blocked Users: {$stats['blocked_users']}\n";
         $message .= "• Total Requests: {$stats['total_requests']}\n\n";
         $message .= "🎛️ **Available Commands:**\n\n";
+        $message .= "🔧 **Maintenance Mode:**\n";
+        $message .= "/maintenancestatus - Check status\n";
+        $message .= "/maintenanceon [duration] [message] - Enable\n";
+        $message .= "/maintenanceoff - Disable\n";
+        $message .= "/maintenancemsg <message> - Set message\n\n";
         $message .= "📢 **Broadcast:**\n";
         $message .= "/broadcast - Send message to all users\n";
-        $message .= "/maintenance - Send maintenance notice\n";
+        $message .= "/maintenancebroadcast - Send maintenance notice\n";
         $message .= "/promo - Send promotion message\n\n";
         $message .= "👥 **User Management:**\n";
         $message .= "/userstats - Detailed statistics\n";
@@ -82,8 +89,13 @@ class AdminHandler {
      * Get admin keyboard
      */
     private function getAdminKeyboard() {
+        $maintenanceStatus = MaintenanceManager::isEnabled() ? '🔴 ON' : '🟢 OFF';
+
         return [
             'inline_keyboard' => [
+                [
+                    ['text' => "🔧 Maintenance ({$maintenanceStatus})", 'callback_data' => 'admin_maintenance']
+                ],
                 [
                     ['text' => '📢 Broadcast', 'callback_data' => 'admin_broadcast'],
                     ['text' => '📊 Stats', 'callback_data' => 'admin_stats']
@@ -519,5 +531,182 @@ class AdminHandler {
                 "❌ Failed to clean logs: " . $e->getMessage()
             );
         }
+    }
+
+    /**
+     * Show maintenance status
+     */
+    public function maintenanceStatus($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $message = MaintenanceManager::getStatusMessage();
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+
+        UserLogger::logCommand($userId, '/maintenancestatus');
+    }
+
+    /**
+     * Enable maintenance mode
+     */
+    public function maintenanceOn($chatId, $userId, $args = '') {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        $parts = explode(' ', trim($args), 2);
+        $duration = null;
+        $message = null;
+
+        // Check if first argument is a number (duration in minutes)
+        if (!empty($parts[0]) && is_numeric($parts[0])) {
+            $duration = (int)$parts[0];
+            $message = $parts[1] ?? null;
+        } else {
+            // No duration, all text is the message
+            $message = $args ?: null;
+        }
+
+        // Enable maintenance
+        MaintenanceManager::enable($userId, $message, $duration);
+
+        // Add current admin to whitelist
+        MaintenanceManager::addToWhitelist($userId);
+
+        $responseMsg = "✅ **Maintenance Mode ENABLED**\n\n";
+
+        if ($duration) {
+            $responseMsg .= "⏰ Duration: {$duration} minutes\n";
+            $endTime = date('H:i', time() + ($duration * 60));
+            $responseMsg .= "🕐 Auto-disable at: {$endTime}\n\n";
+        } else {
+            $responseMsg .= "⏰ Duration: Manual (use /maintenanceoff to disable)\n\n";
+        }
+
+        if ($message) {
+            $responseMsg .= "📝 Custom message set.\n\n";
+        }
+
+        $responseMsg .= "✅ You are whitelisted (can still use bot)\n";
+        $responseMsg .= "ℹ️ Other users will see maintenance message";
+
+        $this->bot->sendMessage($chatId, $responseMsg, 'Markdown');
+
+        UserLogger::logCommand($userId, '/maintenanceon', [
+            'duration' => $duration,
+            'has_custom_message' => $message ? 'yes' : 'no'
+        ]);
+    }
+
+    /**
+     * Disable maintenance mode
+     */
+    public function maintenanceOff($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        if (!MaintenanceManager::isEnabled()) {
+            $this->bot->sendMessage($chatId, "ℹ️ Maintenance mode is already disabled.");
+            return;
+        }
+
+        MaintenanceManager::disable($userId);
+
+        $message = "✅ **Maintenance Mode DISABLED**\n\n";
+        $message .= "Bot is now operational for all users.";
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+
+        UserLogger::logCommand($userId, '/maintenanceoff');
+    }
+
+    /**
+     * Set maintenance message
+     */
+    public function maintenanceMessage($chatId, $userId, $args = '') {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        if (empty($args)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "❌ Usage: /maintenancemsg <your message here>"
+            );
+            return;
+        }
+
+        MaintenanceManager::setMessage($args);
+
+        $message = "✅ **Maintenance Message Updated**\n\n";
+        $message .= "**New message:**\n" . $args . "\n\n";
+        $message .= "This will be shown to users when maintenance mode is enabled.";
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+
+        UserLogger::logCommand($userId, '/maintenancemsg');
+    }
+
+    /**
+     * Send maintenance broadcast
+     */
+    public function maintenanceBroadcast($chatId, $userId) {
+        if (!$this->isAdmin($userId)) {
+            return;
+        }
+
+        // Get all users
+        $users = UserManager::getAllUsers();
+        $targetUsers = array_filter($users, function($user) {
+            return !($user['is_blocked'] ?? false);
+        });
+
+        $message = "🔧 **MAINTENANCE NOTICE**\n\n";
+        $message .= "Bot akan mengalami maintenance dalam waktu dekat.\n\n";
+        $message .= "⏰ **Durasi:** ~30-60 menit\n";
+        $message .= "📅 **Waktu:** Segera\n\n";
+        $message .= "Mohon maaf atas ketidaknyamanannya.\n";
+        $message .= "Terima kasih! 🙏";
+
+        $sent = 0;
+        $failed = 0;
+
+        foreach ($targetUsers as $user) {
+            try {
+                $targetUserId = $user['user_id'];
+                $result = $this->bot->sendMessage($targetUserId, $message, 'Markdown');
+
+                if ($result['ok'] ?? false) {
+                    $sent++;
+                } else {
+                    $failed++;
+                }
+
+                usleep(50000); // 50ms delay (20 msg/sec)
+
+            } catch (\Exception $e) {
+                $failed++;
+            }
+        }
+
+        $reportMsg = "📢 **Maintenance Broadcast Complete**\n\n";
+        $reportMsg .= "✅ Sent: {$sent}\n";
+        $reportMsg .= "❌ Failed: {$failed}\n\n";
+        $reportMsg .= "Total: " . count($targetUsers);
+
+        $this->bot->sendMessage($chatId, $reportMsg, 'Markdown');
+
+        Logger::info("Maintenance broadcast sent", [
+            'admin_id' => $userId,
+            'sent' => $sent,
+            'failed' => $failed
+        ]);
+
+        UserLogger::logCommand($userId, '/maintenancebroadcast', [
+            'sent' => $sent,
+            'failed' => $failed
+        ]);
     }
 }

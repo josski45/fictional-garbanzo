@@ -653,4 +653,39 @@ class CommandHandler {
         return $this->adminHandler->isAdmin($userId);
     }
 
+    /**
+     * Handle /maintenancestatus command
+     */
+    public function handleMaintenanceStatus($chatId, $userId) {
+        $this->adminHandler->maintenanceStatus($chatId, $userId);
+    }
+
+    /**
+     * Handle /maintenanceon command
+     */
+    public function handleMaintenanceOn($chatId, $userId, $args = '') {
+        $this->adminHandler->maintenanceOn($chatId, $userId, $args);
+    }
+
+    /**
+     * Handle /maintenanceoff command
+     */
+    public function handleMaintenanceOff($chatId, $userId) {
+        $this->adminHandler->maintenanceOff($chatId, $userId);
+    }
+
+    /**
+     * Handle /maintenancemsg command
+     */
+    public function handleMaintenanceMsg($chatId, $userId, $args = '') {
+        $this->adminHandler->maintenanceMessage($chatId, $userId, $args);
+    }
+
+    /**
+     * Handle /maintenancebroadcast command
+     */
+    public function handleMaintenanceBroadcast($chatId, $userId) {
+        $this->adminHandler->maintenanceBroadcast($chatId, $userId);
+    }
+
 }
