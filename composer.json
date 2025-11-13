@@ -1,0 +1,13 @@
+{
+    "name": "josski/tools-bot-php",
+    "description": "Josski Tools - Telegram Bot HAR Extractor (PHP Webhook Version)",
+    "version": "1.0.0",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=7.4"
+    },
+    "scripts": {
+        "serve": "php -S localhost:8000 -t public"
+    }
+}
