@@ -3,20 +3,23 @@
 namespace JosskiTools\Handlers;
 
 use JosskiTools\Utils\TelegramBot;
+use JosskiTools\Utils\Logger;
+use JosskiTools\Utils\UserLogger;
+use JosskiTools\Utils\UserManager;
 use JosskiTools\Helpers\KeyboardHelper;
 
 /**
  * Message Handler - Handle all incoming messages
  */
 class MessageHandler {
-    
+
     private $bot;
     private $sessionManager;
     private $config;
     private $commandHandler;
     private $downloadHandler;
     private $tiktokUserHandler;
-    
+
     public function __construct($bot, $sessionManager, $config) {
         $this->bot = $bot;
         $this->sessionManager = $sessionManager;
@@ -24,29 +27,35 @@ class MessageHandler {
         $this->commandHandler = new CommandHandler($bot, $sessionManager, $config);
         $this->downloadHandler = new DownloadHandler($bot, $sessionManager, $config);
         $this->tiktokUserHandler = new TikTokUserHandler($bot, $sessionManager, $config);
+
+        // Initialize logging
+        Logger::init($config['directories']['logs'] ?? null);
+        UserLogger::init($config['directories']['logs'] ?? null);
+        UserManager::init();
     }
     
     /**
      * Handle incoming message
      */
     public function handle($message) {
-        global $logFile;
-        
-        error_log("=== MESSAGE HANDLER CALLED ===");
-        error_log("Message data: " . json_encode($message));
-        
+        Logger::debug("Message handler called", ['message_id' => $message['message_id'] ?? 'unknown']);
+
         $chatId = $message['chat']['id'] ?? null;
         $userId = $message['from']['id'] ?? null;
         $username = $message['from']['username'] ?? 'Unknown';
         $text = $message['text'] ?? '';
         $chatType = $message['chat']['type'] ?? 'private';
-        
-        error_log("Extracted - ChatId: {$chatId}, UserId: {$userId}, Text: {$text}, Type: {$chatType}");
-        
+
         if (!$chatId || !$userId) {
-            error_log("Missing chatId or userId, returning");
+            Logger::warning("Missing chatId or userId in message");
             return;
         }
+
+        // Register/update user
+        UserManager::addUser($userId, [
+            'username' => $username,
+            'chat_type' => $chatType
+        ]);
         
         // Handle new chat members (when bot is added to group)
         if (isset($message['new_chat_members'])) {

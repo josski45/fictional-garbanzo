@@ -1,0 +1,48 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+temp/
+tmp/
+downloads/
+results/
+
+# Sessions
+sessions/
+
+# Data files
+data/
+users.json
+uptime.txt
+
+# Cache
+cache/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Vendor (if using composer)
+vendor/
+
+# Backup files
+*.bak
+*.backup
+*_backup.php
+
+# Deployment files
+deploy_*.zip
