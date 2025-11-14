@@ -95,7 +95,8 @@ class NekoLabsClient {
                     CURLOPT_URL => $url,
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_FOLLOWLOCATION => true,
-                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_SSL_VERIFYPEER => true, // Enable SSL verification for security
+                    CURLOPT_SSL_VERIFYHOST => 2,    // Verify hostname matches certificate
                     CURLOPT_TIMEOUT => $this->timeout,
                     CURLOPT_HTTPHEADER => [
                         'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

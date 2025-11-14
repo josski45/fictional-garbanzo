@@ -235,9 +235,11 @@ class SSSTikProClient {
             $title = trim(strip_tags($m[1]));
         }
 
-        // Extract download URL
+        // Extract download URL - Updated regex to handle attributes in any order
         $downloadUrl = null;
-        if (preg_match('/<a[^>]+href="([^"]+)"[^>]*class="pro-dl-link"/', $html, $m)) {
+        if (preg_match('/<a[^>]+class="pro-dl-link"[^>]+href="([^"]+)"/', $html, $m)) {
+            $downloadUrl = html_entity_decode($m[1]);
+        } elseif (preg_match('/<a[^>]+href="([^"]+)"[^>]+class="pro-dl-link"/', $html, $m)) {
             $downloadUrl = html_entity_decode($m[1]);
         }
 
@@ -248,6 +250,9 @@ class SSSTikProClient {
         }
 
         if (!$downloadUrl) {
+            Logger::warning('SSSTikProClient: No download URL found in video item', [
+                'html_snippet' => substr($html, 0, 200)
+            ]);
             return null;
         }
 

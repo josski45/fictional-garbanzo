@@ -23,7 +23,16 @@ class SessionManager {
      * Get session file path
      */
     private function getSessionFile($userId) {
-        return $this->sessionsDir . '/session_' . $userId . '.json';
+        // Sanitize userId to prevent directory traversal attacks
+        // Only allow alphanumeric characters, underscores, and hyphens
+        $safeUserId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)$userId);
+
+        // Ensure userId is not empty after sanitization
+        if (empty($safeUserId)) {
+            throw new \InvalidArgumentException("Invalid user ID");
+        }
+
+        return $this->sessionsDir . '/session_' . $safeUserId . '.json';
     }
     
     /**

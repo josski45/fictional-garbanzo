@@ -135,12 +135,17 @@ class DatabaseHelper {
         $now = time();
 
         try {
-            $db->exec("DELETE FROM history_entries WHERE expires_at IS NOT NULL AND expires_at < {$now}");
-            $db->exec("DELETE FROM share_links WHERE expires_at IS NOT NULL AND expires_at < {$now}");
-            
+            // Use prepared statements to prevent SQL injection
+            $stmt = $db->prepare("DELETE FROM history_entries WHERE expires_at IS NOT NULL AND expires_at < ?");
+            $stmt->execute([$now]);
+
+            $stmt = $db->prepare("DELETE FROM share_links WHERE expires_at IS NOT NULL AND expires_at < ?");
+            $stmt->execute([$now]);
+
             // Clean old sent_messages (older than 30 days)
             $thirtyDaysAgo = $now - (30 * 24 * 60 * 60);
-            $db->exec("DELETE FROM sent_messages WHERE created_at < {$thirtyDaysAgo}");
+            $stmt = $db->prepare("DELETE FROM sent_messages WHERE created_at < ?");
+            $stmt->execute([$thirtyDaysAgo]);
 
             Logger::info("Database cleanup completed");
         } catch (PDOException $e) {
