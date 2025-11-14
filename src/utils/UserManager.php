@@ -54,7 +54,20 @@ class UserManager {
         }
 
         $content = file_get_contents($usersFile);
+        if ($content === false) {
+            Logger::error("Failed to read users file", ['file' => $usersFile]);
+            return [];
+        }
+
         $users = json_decode($content, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            Logger::error("Failed to decode users JSON", [
+                'error' => json_last_error_msg(),
+                'file' => $usersFile
+            ]);
+            return [];
+        }
 
         return is_array($users) ? $users : [];
     }
@@ -65,7 +78,17 @@ class UserManager {
     private static function saveUsers($users) {
         $usersFile = self::getUsersFile();
         $content = json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        file_put_contents($usersFile, $content, LOCK_EX);
+
+        if ($content === false) {
+            Logger::error("Failed to encode users data to JSON");
+            throw new \RuntimeException("Failed to encode users data");
+        }
+
+        $result = file_put_contents($usersFile, $content, LOCK_EX);
+        if ($result === false) {
+            Logger::error("Failed to save users data", ['file' => $usersFile]);
+            throw new \RuntimeException("Failed to save users data to file");
+        }
     }
 
     /**

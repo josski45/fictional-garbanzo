@@ -6,12 +6,19 @@ ini_set('display_errors', 1);
 session_start();
 $isLoggedIn = isset($_SESSION['setup_logged_in']) && $_SESSION['setup_logged_in'] === true;
 
+// Generate CSRF token if not exists
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 // Password untuk akses setup (ganti ini!)
 define('SETUP_PASSWORD', 'joss2024');
 
 // Handle login
 if (isset($_POST['login'])) {
-    if ($_POST['password'] === SETUP_PASSWORD) {
+    // Use hash_equals() for constant-time comparison to prevent timing attacks
+    $providedPassword = $_POST['password'] ?? '';
+    if (hash_equals(SETUP_PASSWORD, $providedPassword)) {
         $_SESSION['setup_logged_in'] = true;
         header('Location: setup.php');
         exit;
@@ -167,14 +174,27 @@ if ($action === 'menu') {
 
 } elseif ($action === 'env') {
     $envPath = __DIR__ . '/../.env';
-    
+
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_env'])) {
-        $content = $_POST['env_content'];
-        if (file_put_contents($envPath, $content)) {
-            header('Location: setup.php?action=menu&message=' . urlencode('File .env berhasil disimpan!'));
-            exit;
+        // CSRF token validation
+        $providedToken = $_POST['csrf_token'] ?? '';
+        if (!hash_equals($_SESSION['csrf_token'], $providedToken)) {
+            $error = 'Invalid CSRF token!';
         } else {
-            $error = 'Gagal menyimpan file .env!';
+            $content = $_POST['env_content'];
+
+            // Validate .env content to prevent code injection
+            // Check for PHP tags or suspicious patterns
+            if (preg_match('/<\?php|<\?=|<script|eval\(|exec\(|system\(|passthru\(/i', $content)) {
+                $error = 'Invalid content detected! .env file cannot contain PHP code or scripts.';
+            } else {
+                if (file_put_contents($envPath, $content)) {
+                    header('Location: setup.php?action=menu&message=' . urlencode('File .env berhasil disimpan!'));
+                    exit;
+                } else {
+                    $error = 'Gagal menyimpan file .env!';
+                }
+            }
         }
     }
     
@@ -216,12 +236,13 @@ MAX_FILE_SIZE=52428800
     </div>
     
     <form method="POST">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
         <div class="form-group">
             <label>📄 Isi File .env:</label>
             <textarea name="env_content" required><?= htmlspecialchars($envContent) ?></textarea>
             <small>Edit nilai sesuai kebutuhan, simpan untuk menerapkan perubahan</small>
         </div>
-        
+
         <button type="submit" name="save_env" class="btn btn-success">💾 Simpan .env</button>
         <a href="?action=menu" class="btn back-btn">← Kembali</a>
     </form>
@@ -339,12 +360,48 @@ MAX_FILE_SIZE=52428800
     $deployConfigPath = __DIR__ . '/../deploy.config.php';
     
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_deploy'])) {
-        $content = $_POST['deploy_content'];
-        if (file_put_contents($deployConfigPath, $content)) {
-            header('Location: setup.php?action=menu&message=' . urlencode('deploy.config.php berhasil disimpan!'));
-            exit;
+        // CSRF token validation
+        $providedToken = $_POST['csrf_token'] ?? '';
+        if (!hash_equals($_SESSION['csrf_token'], $providedToken)) {
+            $error = 'Invalid CSRF token!';
         } else {
-            $error = 'Gagal menyimpan deploy.config.php!';
+            $content = $_POST['deploy_content'];
+
+            // Validate PHP syntax by checking for obvious malicious patterns
+            // Since this is a config file, we expect it to be valid PHP
+            $suspiciousPatterns = [
+                '/eval\s*\(/i',
+                '/exec\s*\(/i',
+                '/system\s*\(/i',
+                '/passthru\s*\(/i',
+                '/shell_exec\s*\(/i',
+                '/`[^`]*`/',  // Backticks
+                '/proc_open\s*\(/i',
+                '/popen\s*\(/i',
+                '/curl_exec\s*\(/i',
+                '/curl_multi_exec\s*\(/i',
+                '/parse_ini_file\s*\(/i',
+                '/show_source\s*\(/i'
+            ];
+
+            $isSuspicious = false;
+            foreach ($suspiciousPatterns as $pattern) {
+                if (preg_match($pattern, $content)) {
+                    $isSuspicious = true;
+                    break;
+                }
+            }
+
+            if ($isSuspicious) {
+                $error = 'Suspicious code patterns detected! Config file should only contain configuration arrays.';
+            } else {
+                if (file_put_contents($deployConfigPath, $content)) {
+                    header('Location: setup.php?action=menu&message=' . urlencode('deploy.config.php berhasil disimpan!'));
+                    exit;
+                } else {
+                    $error = 'Gagal menyimpan deploy.config.php!';
+                }
+            }
         }
     }
     
@@ -419,12 +476,13 @@ return [
     </div>
     
     <form method="POST">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
         <div class="form-group">
             <label>📄 Isi deploy.config.php:</label>
             <textarea name="deploy_content" required style="min-height: 400px;"><?= htmlspecialchars($deployContent) ?></textarea>
             <small>Edit konfigurasi deployment sesuai server Anda</small>
         </div>
-        
+
         <button type="submit" name="save_deploy" class="btn btn-success">💾 Simpan Config</button>
         <a href="?action=menu" class="btn back-btn">← Kembali</a>
     </form>

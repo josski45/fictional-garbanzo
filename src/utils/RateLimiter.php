@@ -45,19 +45,58 @@ class RateLimiter {
     }
 
     /**
-     * Load rate limit data
+     * Load rate limit data with file lock
+     * Returns array: [data, fileHandle] - Remember to close the handle after use!
+     */
+    private static function loadDataWithLock() {
+        self::init();
+
+        // Open file for reading and writing
+        $fp = fopen(self::$limitsFile, 'c+');
+        if (!$fp) {
+            throw new \RuntimeException("Cannot open rate limits file");
+        }
+
+        // Acquire exclusive lock for read-modify-write operation
+        if (!flock($fp, LOCK_EX)) {
+            fclose($fp);
+            throw new \RuntimeException("Cannot acquire file lock");
+        }
+
+        // Read file content
+        $content = stream_get_contents($fp);
+        $data = json_decode($content, true);
+
+        // Return data and file handle (caller must unlock and close)
+        return [is_array($data) ? $data : [], $fp];
+    }
+
+    /**
+     * Save rate limit data and release lock
+     */
+    private static function saveDataAndUnlock($data, $fp) {
+        // Truncate file and write new data
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($data, JSON_PRETTY_PRINT));
+
+        // Release lock and close file
+        flock($fp, LOCK_UN);
+        fclose($fp);
+    }
+
+    /**
+     * Legacy method for backward compatibility
      */
     private static function loadData() {
         self::init();
-
         $content = file_get_contents(self::$limitsFile);
         $data = json_decode($content, true);
-
         return is_array($data) ? $data : [];
     }
 
     /**
-     * Save rate limit data
+     * Legacy method for backward compatibility
      */
     private static function saveData($data) {
         file_put_contents(self::$limitsFile, json_encode($data, JSON_PRETTY_PRINT), LOCK_EX);
@@ -68,8 +107,11 @@ class RateLimiter {
      * Returns: ['allowed' => bool, 'reason' => string, 'retry_after' => int]
      */
     public static function check($userId) {
-        $data = self::loadData();
+        // Use file locking to prevent race conditions
+        list($data, $fp) = self::loadDataWithLock();
         $now = time();
+
+        try {
 
         // Initialize user data if not exists
         if (!isset($data[$userId])) {
@@ -91,6 +133,10 @@ class RateLimiter {
                 'banned_until' => date('Y-m-d H:i:s', $user['banned_until'])
             ]);
 
+            // Release lock before returning
+            flock($fp, LOCK_UN);
+            fclose($fp);
+
             return [
                 'allowed' => false,
                 'reason' => 'banned',
@@ -101,6 +147,10 @@ class RateLimiter {
 
         // Check temp ban
         if ($user['temp_banned_until'] > $now) {
+            // Release lock before returning
+            flock($fp, LOCK_UN);
+            fclose($fp);
+
             return [
                 'allowed' => false,
                 'reason' => 'temp_banned',
@@ -113,6 +163,10 @@ class RateLimiter {
         if ($user['last_request'] > 0) {
             $timeSinceLastRequest = $now - $user['last_request'];
             if ($timeSinceLastRequest < self::$limits['cooldown_period']) {
+                // Release lock before returning
+                flock($fp, LOCK_UN);
+                fclose($fp);
+
                 return [
                     'allowed' => false,
                     'reason' => 'cooldown',
@@ -145,7 +199,7 @@ class RateLimiter {
         if ($requestsLastMinute >= self::$limits['requests_per_minute']) {
             $user['violations']++;
             self::handleViolation($user, $userId, 'minute');
-            self::saveData($data);
+            self::saveDataAndUnlock($data, $fp);
 
             return [
                 'allowed' => false,
@@ -158,7 +212,7 @@ class RateLimiter {
         if ($requestsLastHour >= self::$limits['requests_per_hour']) {
             $user['violations']++;
             self::handleViolation($user, $userId, 'hour');
-            self::saveData($data);
+            self::saveDataAndUnlock($data, $fp);
 
             return [
                 'allowed' => false,
@@ -171,7 +225,7 @@ class RateLimiter {
         if ($requestsLastDay >= self::$limits['requests_per_day']) {
             $user['violations']++;
             self::handleViolation($user, $userId, 'day');
-            self::saveData($data);
+            self::saveDataAndUnlock($data, $fp);
 
             return [
                 'allowed' => false,
@@ -184,7 +238,7 @@ class RateLimiter {
         // All checks passed - record this request
         $user['requests'][] = $now;
         $user['last_request'] = $now;
-        self::saveData($data);
+        self::saveDataAndUnlock($data, $fp);
 
         return [
             'allowed' => true,
@@ -192,6 +246,15 @@ class RateLimiter {
             'retry_after' => 0,
             'message' => null
         ];
+
+        } catch (\Exception $e) {
+            // Ensure lock is released even if an error occurs
+            if (isset($fp) && is_resource($fp)) {
+                flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+            throw $e;
+        }
     }
 
     /**
