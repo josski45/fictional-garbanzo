@@ -7,16 +7,87 @@ use JosskiTools\Utils\Logger;
 use JosskiTools\Utils\UserLogger;
 use JosskiTools\Utils\UserManager;
 use JosskiTools\Helpers\KeyboardHelper;
+use JosskiTools\Handlers\AdminHandler;
+use JosskiTools\Handlers\DownloadHandler;
+use JosskiTools\Utils\StatsManager;
+use JosskiTools\Utils\DownloadHistory;
+use JosskiTools\Utils\ChannelHistory;
+use JosskiTools\Utils\DonationManager;
 
 /**
  * Command Handler - Handle all bot commands
  */
 class CommandHandler {
+    /**
+     * Handle /stats command
+     */
+    public function handleStats($chatId, $userId) {
+        UserLogger::logCommand($userId, '/stats');
+
+        $stats = $this->statsManager->getStats();
+
+        $today = $stats['today'] ?? [];
+        $week = $stats['week'] ?? [];
+        $month = $stats['month'] ?? [];
+        $total = $stats['total'] ?? [];
+
+        $totalRequests = $total['requests'] ?? 0;
+        $totalSuccess = $total['success'] ?? 0;
+        $totalFailed = $total['failed'] ?? 0;
+
+        $successRate = $totalRequests > 0
+            ? round(($totalSuccess / $totalRequests) * 100, 1)
+            : 0;
+
+        if ($successRate >= 95) {
+            $statusEmoji = '🟢';
+        } elseif ($successRate >= 85) {
+            $statusEmoji = '🟡';
+        } else {
+            $statusEmoji = '🔴';
+        }
+
+        $todayDate = $today['date'] ?? date('Y-m-d');
+        $todayRequests = $today['requests'] ?? 0;
+        $todaySuccess = $today['success'] ?? 0;
+        $todayFailed = $today['failed'] ?? 0;
+
+        $weekLabel = $week['week'] ?? date('Y-W');
+        $weekRequests = $week['requests'] ?? 0;
+        $weekSuccess = $week['success'] ?? 0;
+        $weekFailed = $week['failed'] ?? 0;
+
+        $monthLabel = $month['month'] ?? date('Y-m');
+        $monthRequests = $month['requests'] ?? 0;
+        $monthSuccess = $month['success'] ?? 0;
+        $monthFailed = $month['failed'] ?? 0;
+
+        $message = "📊 *BOT STATISTICS OVERVIEW*\n\n";
+        $message .= "📅 *Today* ({$todayDate}): {$todayRequests} requests\n";
+        $message .= "   ✅ {$todaySuccess} | ❌ {$todayFailed}\n\n";
+
+        $message .= "🗓️ *This Week* ({$weekLabel}): {$weekRequests} requests\n";
+        $message .= "   ✅ {$weekSuccess} | ❌ {$weekFailed}\n\n";
+
+        $message .= "📆 *This Month* ({$monthLabel}): {$monthRequests} requests\n";
+        $message .= "   ✅ {$monthSuccess} | ❌ {$monthFailed}\n\n";
+
+        $message .= "🌐 *All-Time Total*: {$totalRequests} requests\n";
+        $message .= "   ✅ {$totalSuccess} | ❌ {$totalFailed}\n\n";
+
+        $message .= "{$statusEmoji} *Success Rate:* {$successRate}%\n";
+        $message .= "🕒 *Last Updated:* " . ($stats['last_updated'] ?? 'N/A');
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
 
     private $bot;
     private $sessionManager;
     private $config;
     private $adminHandler;
+    private $statsManager;
+    private $downloadHandler;
 
     public function __construct($bot, $sessionManager, $config) {
         $this->bot = $bot;
@@ -30,12 +101,18 @@ class CommandHandler {
 
         // Initialize admin handler
         $this->adminHandler = new AdminHandler($bot, $sessionManager, $config);
+        
+        // Initialize stats manager with configured data directory
+        $statsBaseDir = $config['directories']['data'] ?? (__DIR__ . '/../../data');
+        $statsDir = rtrim($statsBaseDir, '\\/') . '/stats';
+        $this->statsManager = new StatsManager($statsDir);
+        $this->downloadHandler = new DownloadHandler($bot, $sessionManager, $config);
     }
     
     /**
      * Handle /start command
      */
-    public function handleStart($chatId, $userId, $username, $chatType = 'private') {
+    public function handleStart($chatId, $userId, $username, $chatType = 'private', $startPayload = '') {
         Logger::info("Start command", ['user_id' => $userId, 'chat_type' => $chatType]);
         UserLogger::logCommand($userId, '/start');
 
@@ -49,8 +126,7 @@ class CommandHandler {
         $this->sessionManager->clearSession($userId);
         
         // Get stats with safe defaults
-        $statsManager = new \JosskiTools\Utils\StatsManager();
-        $stats = $statsManager->getStats();
+        $stats = $this->statsManager->getStats();
         
         // Get quote
         $quotesManager = new \JosskiTools\Utils\QuotesManager();
@@ -126,7 +202,7 @@ class CommandHandler {
             
             if (file_exists($photoPath)) {
                 $this->bot->sendPhoto($chatId, new \CURLFile($photoPath), $message, 'Markdown', $keyboard);
-            
+
             } else {
                 // Fallback to text only
                 $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
@@ -135,35 +211,90 @@ class CommandHandler {
             // Fallback to plain text if formatting fails
             $this->bot->sendMessage($chatId, strip_tags($message), null, $keyboard);
         }
+
+            $this->handleStartPayload($chatId, $userId, $startPayload);
     }
+
+        private function handleStartPayload($chatId, $userId, $payload) {
+            $payload = trim((string)$payload);
+
+            if ($payload === '') {
+                return;
+            }
+
+            if (stripos($payload, 'share_') === 0) {
+                $token = strtoupper(substr($payload, 6));
+
+                if (!preg_match('/^[A-Z0-9]{4,}$/', $token)) {
+                    $this->bot->sendMessage($chatId, "⚠️ Link tidak valid. Silakan minta tautan baru.");
+                    return;
+                }
+
+                ChannelHistory::init($this->bot, $this->config);
+                $entry = ChannelHistory::getHistoryEntry($token);
+
+                if (!$entry) {
+                    $this->bot->sendMessage($chatId, "❌ Konten dengan ID `{$token}` tidak ditemukan atau sudah kedaluwarsa.", 'Markdown');
+                    return;
+                }
+
+                $url = $entry['url'] ?? '';
+                if (!$url) {
+                    $this->bot->sendMessage($chatId, "❌ Konten dengan ID `{$token}` tidak memiliki URL yang bisa diunduh.", 'Markdown');
+                    return;
+                }
+
+                UserLogger::log($userId, 'share_link_used', [
+                    'token' => $token,
+                    'owner_id' => $entry['user_id'] ?? null,
+                    'platform' => $entry['platform'] ?? null
+                ]);
+
+                $title = $entry['title'] ?? 'Konten';
+                $this->bot->sendMessage(
+                    $chatId,
+                    "🔁 Mengambil konten yang dibagikan (`{$token}`) - {$title}. Mohon tunggu...",
+                    'Markdown'
+                );
+
+                $platform = $entry['platform'] ?? null;
+                $this->downloadHandler->handle($chatId, $url, $platform);
+                return;
+            }
+
+            // Future payloads can be added here
+        }
     
     /**
      * Handle /help command
      */
     public function handleHelp($chatId) {
         UserLogger::logCommand($chatId, '/help');
-        $message = "📚 *Josski Tools Bot - Help*\n\n";
-        $message .= "🎮 *NAVIGATION*\n";
-        $message .= "• Gunakan keyboard button di bawah\n";
-        $message .= "• Atau ketik command langsung\n\n";
-        $message .= "*Commands:*\n";
-        $message .= "/start - Start the bot\n";
-        $message .= "/help - Show this help\n";
-        $message .= "/menu - Show main menu\n\n";
-        $message .= "*Downloader:*\n";
-        $message .= "/capcut <url> - Download Capcut video\n";
-        $message .= "/facebook <url> - Download Facebook video\n";
-        $message .= "/spotify <url> - Download Spotify audio\n";
-        $message .= "/tiktok <url> - Download TikTok video\n";
-        $message .= "/ytmp3 <url> - Download YouTube audio\n";
-        $message .= "/ytmp4 <url> - Download YouTube video\n\n";
-        $message .= "*TikTok Special:*\n";
-        $message .= "/ttuser <username> - Get videos from TikTok user\n";
-        $message .= "/ttall <username> - Download ALL videos (up to 60)\n\n";
-        $message .= "*Aliases:*\n";
-        $message .= "/fb - Facebook | /tt - TikTok\n\n";
-        $message .= "/cancel - Cancel operation\n\n";
-        $message .= "Need help? Contact admin! 🚀";
+        $message = "📚 *Panduan Pengguna Josski Tools*\n\n";
+        $message .= "✨ *Cara tercepat:* kirimkan link TikTok/Facebook/YouTube/Spotify/CapCut langsung ke chat, bot akan mendeteksi dan menyiapkan unduhan otomatis.\n\n";
+        $message .= "🔘 *Tombol Utama di Keyboard*\n";
+        $message .= "• 📥 Downloader — pilih platform secara manual\n";
+        $message .= "• 📚 Help — buka panduan ini\n";
+        $message .= "• 🎛️ Menu — tampilkan menu inline\n";
+        $message .= "• 💝 Donasi — dukung bot via QRIS\n\n";
+        $message .= "🧰 *Perintah Penting*\n";
+        $message .= "/start — perkenalan bot\n";
+        $message .= "/help — panduan ini\n";
+        $message .= "/menu — menu cepat\n";
+        $message .= "/donate — info dukungan & QRIS\n";
+        $message .= "/cancel — batalkan proses yang sedang berjalan\n\n";
+        $message .= "🎯 *Downloader Commands*\n";
+        $message .= "/tiktok, /facebook, /spotify, /capcut <url>\n";
+        $message .= "/ytmp3 & /ytmp4 <url> untuk audio/video YouTube\n";
+        $message .= "/ttuser <username> — daftar video TikTok per halaman\n";
+        $message .= "/ttall <username> — kirim semua video (maks 60)\n\n";
+        $message .= "🗂️ *Riwayat & Favorit*\n";
+        $message .= "/get [kata]/[jumlah] — ambil riwayat download terbaru\n";
+        $message .= "/history — riwayat lengkap\n";
+        $message .= "/favorites & /favorite <url> — kelola favorit\n\n";
+        $message .= "🔗 *Share Link*\n";
+        $message .= "/share — reply ke media untuk generate share link\n\n";
+        $message .= "❓ Masih bingung? Tinggal chat admin atau tekan tombol Donasi untuk mendukung pengembangan. 🚀";
         
         $keyboard = KeyboardHelper::getMainKeyboard();
         
@@ -263,7 +394,7 @@ class CommandHandler {
      */
     public function handleCancel($chatId, $userId) {
         UserLogger::logCommand($userId, '/cancel');
-        $this->sessionManager->clearState($userId);
+        $this->sessionManager->clearSession($userId);
 
         $message = "❌ *Operation Cancelled*\n\n";
         $message .= "All pending operations have been cancelled.\n\n";
@@ -307,6 +438,128 @@ class CommandHandler {
         $message .= "💡 Use /clearhistory to clear all history";
 
         $this->bot->sendMessage($chatId, $message, 'Markdown');
+    }
+
+    /**
+     * Handle /get command (quick history lookup)
+     */
+    public function handleGet($chatId, $userId, $args = '') {
+        UserLogger::logCommand($userId, '/get', ['query' => $args]);
+
+        $query = trim($args);
+        $limit = 5;
+
+        if ($query !== '') {
+            if (preg_match('/^(\d+)\s+(.*)$/', $query, $matches)) {
+                $limit = (int) $matches[1];
+                $query = trim($matches[2]);
+            } elseif (is_numeric($query)) {
+                $limit = (int) $query;
+                $query = '';
+            }
+        }
+
+        $limit = max(1, min($limit, 10));
+
+        // Check if user is admin
+        $adminIds = $this->config['admin_ids'] ?? [];
+        $isAdmin = in_array($userId, $adminIds);
+
+        ChannelHistory::init($this->bot, $this->config);
+        $hasChannel = $isAdmin ? ChannelHistory::hasChannel($userId) : false;
+
+        // Check if query looks like a UUIDv4 token
+        if ($query !== '' && preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i', $query)) {
+            // Try to get from channel history by token
+            $historyEntry = ChannelHistory::getHistoryEntry($query);
+            
+            if ($historyEntry) {
+                // Found in channel history - redirect to channel or show info
+                $message = "📦 *Download Found*\n\n";
+                $message .= "🔑 Token: `{$query}`\n";
+                $message .= "📺 Platform: " . strtoupper($historyEntry['platform'] ?? 'unknown') . "\n";
+                $message .= "📝 Title: " . $this->escapeMarkdown($historyEntry['title'] ?? 'No title') . "\n";
+                $message .= "📅 Date: " . date('M d, H:i', $historyEntry['timestamp'] ?? time()) . "\n\n";
+                
+                $keyboard = null;
+                if (!empty($historyEntry['url'])) {
+                    $keyboard = ['inline_keyboard' => [
+                        [['text' => '🔗 Open Original', 'url' => $historyEntry['url']]]
+                    ]];
+                }
+                
+                // If there's a channel message, provide link
+                if (!empty($historyEntry['channel_id']) && !empty($historyEntry['message_id'])) {
+                    $channelId = $historyEntry['channel_id'];
+                    // Remove the -100 prefix if present for the link
+                    $channelIdStr = ltrim($channelId, '-');
+                    if (strpos($channelIdStr, '100') === 0) {
+                        $channelIdStr = substr($channelIdStr, 3);
+                    }
+                    $messageId = $historyEntry['message_id'];
+                    $message .= "💡 View in channel: `https://t.me/c/{$channelIdStr}/{$messageId}`\n";
+                }
+                
+                $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+                return;
+            }
+        }
+
+        if ($query !== '') {
+            $history = DownloadHistory::searchHistory($userId, $query);
+        } else {
+            $history = DownloadHistory::getHistory($userId, $limit);
+        }
+
+        if (empty($history)) {
+            $message = "📭 *No downloads found*";
+
+            if ($query !== '') {
+                $message .= "\n\n🔍 Filter: `" . $this->escapeMarkdown($query) . "`";
+            }
+
+            if (!$hasChannel) {
+                $message .= "\n\n💡 Setup history channel dengan /setupchannel agar downloadmu tersimpan otomatis.";
+            }
+
+            $this->bot->sendMessage($chatId, $message, 'Markdown');
+            return;
+        }
+
+        $history = array_slice($history, 0, $limit);
+
+        $message = "📦 *Latest Downloads*\n\n";
+
+        if ($query !== '') {
+            $message .= "🔍 Filter: `" . $this->escapeMarkdown($query) . "`\n\n";
+        }
+
+        $keyboard = ['inline_keyboard' => []];
+
+        foreach ($history as $idx => $item) {
+            $num = $idx + 1;
+            $platform = strtoupper($item['platform'] ?? 'unknown');
+            $title = $this->escapeMarkdown($item['title'] ?? 'No title');
+            $date = date('M d, H:i', $item['timestamp'] ?? time());
+            $url = $item['url'] ?? '';
+
+            $message .= "{$num}. [{$platform}] {$title}\n";
+            $message .= "   📅 {$date}\n\n";
+
+            if (!empty($url)) {
+                $keyboard['inline_keyboard'][] = [
+                    ['text' => "🔗 #{$num}", 'url' => $url]
+                ];
+            }
+        }
+
+        if ($hasChannel) {
+            $message .= "📺 *Tip:* Cek channel historimu untuk versi media.\n";
+        } elseif ($isAdmin) {
+            $message .= "💡 Gunakan /setupchannel agar riwayat tersimpan dengan preview.\n";
+        }
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown', !empty($keyboard['inline_keyboard']) ? $keyboard : null);
     }
 
     /**
@@ -379,6 +632,73 @@ class CommandHandler {
     }
 
     /**
+     * Handle /share command
+     */
+    public function handleShare($chatId, $userId, array $message, $args = '') {
+        UserLogger::logCommand($userId, '/share');
+
+        $chatType = $message['chat']['type'] ?? 'private';
+        if ($chatType !== 'private') {
+            $this->bot->sendMessage($chatId, "ℹ️ Gunakan /share di chat pribadi dengan bot.");
+            return;
+        }
+
+        $reply = $message['reply_to_message'] ?? null;
+        if (!$reply) {
+            $this->bot->sendMessage(
+                $chatId,
+                "🔁 Balas (reply) pesan file yang ingin dibagikan, lalu kirim /share."
+            );
+            return;
+        }
+
+        $replyMessageId = $reply['message_id'] ?? null;
+        if (!$replyMessageId) {
+            $this->bot->sendMessage($chatId, "❌ Tidak dapat membaca pesan yang direply. Coba lagi.");
+            return;
+        }
+
+        ChannelHistory::init($this->bot, $this->config);
+        $shareResult = ChannelHistory::createShareFromMessage($userId, $replyMessageId);
+
+        if (!($shareResult['success'] ?? false)) {
+            $this->bot->sendMessage($chatId, $shareResult['message'] ?? '❌ Gagal membuat link berbagi.');
+            return;
+        }
+
+        $token = $shareResult['token'] ?? null;
+        $link = $shareResult['link'] ?? null;
+
+        if (!$token || !$link) {
+            $this->bot->sendMessage($chatId, "⚠️ Link berbagi belum tersedia. Coba lagi nanti.");
+            return;
+        }
+
+        $safeToken = $this->escapeMarkdown($token);
+        $safeLink = $this->escapeMarkdown($link);
+
+        $messageText = "📤 *Link Berbagi Siap!*\n\n";
+        $messageText .= "Bagikan ke temanmu:\n`{$safeLink}`\n\n";
+        $messageText .= "🆔 Token: `{$safeToken}`\n\n";
+        $messageText .= "Temanmu akan otomatis menerima kontennya setelah menekan Start.";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🚀 Buka Link', 'url' => $link]
+                ]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $messageText, 'Markdown', $keyboard);
+
+        UserLogger::log($userId, 'share_link_generated', [
+            'token' => $token,
+            'message_id' => $replyMessageId
+        ]);
+    }
+
+    /**
      * Handle /mystats command
      */
     public function handleMyStats($chatId, $userId) {
@@ -405,39 +725,116 @@ class CommandHandler {
     /**
      * Handle /donate command
      */
-    public function handleDonate($chatId, $userId) {
-        UserLogger::logCommand($userId, '/donate');
+    public function handleDonate($chatId, $userId, array $context = []) {
+        $log = $context['log'] ?? true;
+        if ($log) {
+            UserLogger::logCommand($userId, '/donate');
+        }
+
+        DonationManager::init($this->config['directories']['data'] ?? null);
+
+        $mode = $context['mode'] ?? 'send';
+        $messageId = $context['message_id'] ?? null;
+        $state = $context['state'] ?? 'main';
 
         $message = DonationManager::getDonationInfo();
+        $keyboard = $this->buildDonationInlineKeyboard($state);
 
-        $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '💝 View Leaderboard', 'callback_data' => 'donate_leaderboard']],
-                [['text' => '👤 My Profile', 'callback_data' => 'donate_profile']]
-            ]
-        ];
+        $photoPath = dirname(__DIR__, 2) . '/public/qrisku.jpg';
 
-        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+        if ($mode === 'edit' && $messageId) {
+            $this->bot->editMessageCaption($chatId, $messageId, $message, 'Markdown', $keyboard);
+            return;
+        }
+
+        if (file_exists($photoPath)) {
+            $this->bot->sendPhoto($chatId, $photoPath, $message, 'Markdown', $keyboard);
+        } else {
+            $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+        }
     }
 
     /**
      * Handle /myprofile command (donor profile)
      */
-    public function handleMyProfile($chatId, $userId) {
-        UserLogger::logCommand($userId, '/myprofile');
+    public function handleMyProfile($chatId, $userId, array $context = []) {
+        $log = $context['log'] ?? true;
+        if ($log) {
+            UserLogger::logCommand($userId, '/myprofile');
+        }
+
+        DonationManager::init($this->config['directories']['data'] ?? null);
+
+        $mode = $context['mode'] ?? 'send';
+        $messageId = $context['message_id'] ?? null;
+        $state = $context['state'] ?? 'profile';
 
         $message = DonationManager::getDonorProfile($userId);
-        $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $keyboard = $this->buildDonationInlineKeyboard($state);
+
+        if ($mode === 'edit' && $messageId) {
+            $this->bot->editMessageCaption($chatId, $messageId, $message, 'Markdown', $keyboard);
+            return;
+        }
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
     }
 
     /**
      * Handle /leaderboard command
      */
-    public function handleLeaderboard($chatId, $userId) {
-        UserLogger::logCommand($userId, '/leaderboard');
+    public function handleLeaderboard($chatId, $userId, array $context = []) {
+        $log = $context['log'] ?? true;
+        if ($log) {
+            UserLogger::logCommand($userId, '/leaderboard');
+        }
+
+        DonationManager::init($this->config['directories']['data'] ?? null);
+
+        $mode = $context['mode'] ?? 'send';
+        $messageId = $context['message_id'] ?? null;
+        $state = $context['state'] ?? 'leaderboard';
 
         $message = DonationManager::getLeaderboard(10);
-        $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $keyboard = $this->buildDonationInlineKeyboard($state);
+
+        if ($mode === 'edit' && $messageId) {
+            $this->bot->editMessageCaption($chatId, $messageId, $message, 'Markdown', $keyboard);
+            return;
+        }
+
+        $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+    }
+
+    private function buildDonationInlineKeyboard(string $state = 'main'): array {
+        $rows = [
+            [
+                ['text' => '👤 Profil Donaturku', 'callback_data' => 'donate_profile'],
+                ['text' => '🏆 Leaderboard', 'callback_data' => 'donate_leaderboard']
+            ]
+        ];
+
+        if ($state !== 'main') {
+            $rows[] = [
+                ['text' => '⬅️ Kembali ke QR', 'callback_data' => 'donate_main']
+            ];
+        }
+
+        return ['inline_keyboard' => $rows];
+    }
+
+    /**
+     * Escape Telegram Markdown special chars for legacy Markdown parser.
+     */
+    private function escapeMarkdown(string $text): string {
+        $replacements = [
+            '_' => '\\_',
+            '*' => '\\*',
+            '`' => '\\`',
+            '[' => '\\['
+        ];
+
+        return strtr($text, $replacements);
     }
 
     /**
@@ -490,10 +887,17 @@ class CommandHandler {
     }
 
     /**
-     * Handle /setupchannel command
+     * Handle /setupchannel command (Admin only)
      */
     public function handleSetupChannel($chatId, $userId, $args = '') {
         UserLogger::logCommand($userId, '/setupchannel');
+
+        // Check if user is admin
+        $adminIds = $this->config['admin_ids'] ?? [];
+        if (!in_array($userId, $adminIds)) {
+            $this->bot->sendMessage($chatId, "❌ Command ini hanya untuk admin.");
+            return;
+        }
 
         // Initialize channel history
         ChannelHistory::init($this->bot, $this->config);
@@ -522,10 +926,17 @@ class CommandHandler {
     }
 
     /**
-     * Handle /channelinfo command
+     * Handle /channelinfo command (Admin only)
      */
     public function handleChannelInfo($chatId, $userId) {
         UserLogger::logCommand($userId, '/channelinfo');
+
+        // Check if user is admin
+        $adminIds = $this->config['admin_ids'] ?? [];
+        if (!in_array($userId, $adminIds)) {
+            $this->bot->sendMessage($chatId, "❌ Command ini hanya untuk admin.");
+            return;
+        }
 
         ChannelHistory::init($this->bot, $this->config);
         $message = ChannelHistory::getChannelInfo($userId);
@@ -533,10 +944,17 @@ class CommandHandler {
     }
 
     /**
-     * Handle /removechannel command
+     * Handle /removechannel command (Admin only)
      */
     public function handleRemoveChannel($chatId, $userId) {
         UserLogger::logCommand($userId, '/removechannel');
+
+        // Check if user is admin
+        $adminIds = $this->config['admin_ids'] ?? [];
+        if (!in_array($userId, $adminIds)) {
+            $this->bot->sendMessage($chatId, "❌ Command ini hanya untuk admin.");
+            return;
+        }
 
         ChannelHistory::init($this->bot, $this->config);
         $result = ChannelHistory::removeChannel($userId);

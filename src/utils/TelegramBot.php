@@ -21,6 +21,15 @@ class TelegramBot {
     public function request($method, $params = []) {
         $url = $this->apiUrl . $method;
         
+        $logDir = __DIR__ . '/../../logs';
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0777, true);
+        }
+        $logFile = $logDir . '/telegram_api.log';
+
+        $logEntry = date('[Y-m-d H:i:s] ') . "Request {$method} " . json_encode($params, JSON_UNESCAPED_UNICODE) . "\n";
+        @file_put_contents($logFile, $logEntry, FILE_APPEND);
+
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_POST, true);
@@ -61,11 +70,14 @@ class TelegramBot {
         
         $result = json_decode($response, true);
         if ($result === null) {
+            @file_put_contents($logFile, date('[Y-m-d H:i:s] ') . "Response {$method} INVALID_JSON: {$response}\n", FILE_APPEND);
             return [
                 'ok' => false,
                 'description' => 'Invalid JSON response: ' . $response
             ];
         }
+
+        @file_put_contents($logFile, date('[Y-m-d H:i:s] ') . "Response {$method} " . json_encode($result, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND);
         
         return $result;
     }
@@ -160,6 +172,13 @@ class TelegramBot {
             'chat_id' => $chatId,
             'audio' => $audio
         ];
+
+        // If provided path is local file, convert to CURLFile for upload
+        if (is_string($audio) && file_exists($audio)) {
+            $realPath = realpath($audio) ?: $audio;
+            $params['audio'] = new \CURLFile($realPath);
+            error_log("Sending audio as uploaded file: {$realPath}");
+        }
         
         if ($caption) {
             $params['caption'] = $caption;
@@ -192,6 +211,11 @@ class TelegramBot {
             'chat_id' => $chatId,
             'photo' => $photo
         ];
+
+        if (is_string($photo) && file_exists($photo)) {
+            $realPath = realpath($photo) ?: $photo;
+            $params['photo'] = new \CURLFile($realPath);
+        }
         
         if ($caption) {
             $params['caption'] = $caption;
@@ -371,6 +395,27 @@ class TelegramBot {
         }
         
         return $this->request('editMessageText', $params);
+    }
+
+    /**
+     * Edit caption for media messages
+     */
+    public function editMessageCaption($chatId, $messageId, $caption, $parseMode = null, $replyMarkup = null) {
+        $params = [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'caption' => $caption
+        ];
+
+        if ($parseMode) {
+            $params['parse_mode'] = $parseMode;
+        }
+
+        if ($replyMarkup) {
+            $params['reply_markup'] = json_encode($replyMarkup);
+        }
+
+        return $this->request('editMessageCaption', $params);
     }
     
     /**

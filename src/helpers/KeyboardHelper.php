@@ -18,6 +18,7 @@ class KeyboardHelper {
                     ['text' => '📚 Help']
                 ],
                 [
+                    ['text' => '💝 Donasi'],
                     ['text' => '🎛️ Menu']
                 ]
             ],
@@ -43,10 +44,14 @@ class KeyboardHelper {
                     ['text' => '🎬 YouTube MP4']
                 ],
                 [
-                    ['text' => '🎨 CapCut']
+                    ['text' => '🎨 CapCut'],
+                    ['text' => '💝 Donasi']
                 ],
                 [
                     ['text' => '🏠 Main Menu']
+                ],
+                [
+                    ['text' => '🔙 Menu Awal']
                 ]
             ],
             'resize_keyboard' => true,

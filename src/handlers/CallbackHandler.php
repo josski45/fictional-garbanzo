@@ -3,6 +3,8 @@
 namespace JosskiTools\Handlers;
 
 use JosskiTools\Utils\TelegramBot;
+use JosskiTools\Utils\ChannelHistory;
+use JosskiTools\Utils\DownloadHistory;
 use JosskiTools\Helpers\KeyboardHelper;
 
 /**
@@ -27,7 +29,7 @@ class CallbackHandler {
     /**
      * Handle callback query
      */
-    public function handle($callbackQuery) {
+    public function handleCallback($callbackQuery) {
         $chatId = $callbackQuery['message']['chat']['id'];
         $userId = $callbackQuery['from']['id'] ?? $chatId;
         $callbackId = $callbackQuery['id'];
@@ -64,6 +66,16 @@ class CallbackHandler {
             case 'download':
                 $this->handleDownloadCallback($chatId, $data);
                 break;
+
+            case 'donate':
+                $this->handleDonateCallback($callbackQuery, $parts);
+                break;
+
+            case 'redl':
+            case 'fav':
+            case 'del':
+                $this->handleHistoryCallback($callbackQuery, $action, $parts[1] ?? null);
+                break;
                 
             default:
                 // Legacy switch
@@ -80,6 +92,11 @@ class CallbackHandler {
                 }
                 break;
         }
+    }
+
+    // Backward compatibility entry point (older code may still call handle())
+    public function handle($callbackQuery) {
+        $this->handleCallback($callbackQuery);
     }
     
     /**
@@ -249,6 +266,102 @@ class CallbackHandler {
     private function handleDownloadCallback($chatId, $data) {
         if ($data === 'download_cancel') {
             $this->bot->sendMessage($chatId, "❌ Cancelled");
+        }
+    }
+
+    /**
+     * Handle donation related callbacks
+     */
+    private function handleDonateCallback(array $callbackQuery, array $parts) {
+        $chatId = $callbackQuery['message']['chat']['id'];
+        $userId = $callbackQuery['from']['id'] ?? $chatId;
+        $messageId = $callbackQuery['message']['message_id'] ?? null;
+
+        $subAction = $parts[1] ?? 'main';
+
+        require_once __DIR__ . '/CommandHandler.php';
+        $commandHandler = new CommandHandler($this->bot, $this->sessionManager, $this->config);
+
+        $context = [
+            'mode' => 'edit',
+            'message_id' => $messageId,
+            'log' => false
+        ];
+
+        switch ($subAction) {
+            case 'leaderboard':
+                $context['state'] = 'leaderboard';
+                $commandHandler->handleLeaderboard($chatId, $userId, $context);
+                break;
+
+            case 'profile':
+                $context['state'] = 'profile';
+                $commandHandler->handleMyProfile($chatId, $userId, $context);
+                break;
+
+            default:
+                $context['state'] = 'main';
+                $commandHandler->handleDonate($chatId, $userId, $context);
+                break;
+        }
+    }
+
+    private function handleHistoryCallback(array $callbackQuery, string $action, ?string $token) {
+        $chatId = $callbackQuery['message']['chat']['id'];
+        $userId = $callbackQuery['from']['id'] ?? $chatId;
+
+        if (!$token) {
+            $this->bot->sendMessage($chatId, "❌ ID riwayat tidak valid.");
+            return;
+        }
+
+        ChannelHistory::init($this->bot, $this->config);
+        $entry = ChannelHistory::getHistoryEntry($token);
+
+        if (!$entry) {
+            $this->bot->sendMessage($chatId, "❌ Data untuk ID `{$token}` tidak ditemukan.", 'Markdown');
+            return;
+        }
+
+        switch ($action) {
+            case 'redl':
+                $url = $entry['url'] ?? '';
+
+                if (empty($url)) {
+                    $this->bot->sendMessage($chatId, "⚠️ URL tidak tersedia untuk ID `{$token}`.", 'Markdown');
+                    return;
+                }
+
+                $platform = $entry['platform'] ?? null;
+                $replyTo = $callbackQuery['message']['message_id'] ?? null;
+                $this->downloadHandler->handle($chatId, $url, $platform, $replyTo);
+                break;
+
+            case 'fav':
+                DownloadHistory::init($this->config['directories']['data'] ?? null);
+                $result = DownloadHistory::addFavorite(
+                    $userId,
+                    $entry['url'] ?? '',
+                    $entry['platform'] ?? 'unknown',
+                    $entry['title'] ?? null,
+                    $entry['extra']['thumbnail'] ?? null
+                );
+
+                $message = $result['success'] ?? false
+                    ? "✅ Disimpan ke favorit."
+                    : "ℹ️ " . ($result['message'] ?? 'Sudah ada di favorit.');
+
+                $this->bot->sendMessage($chatId, $message);
+                break;
+
+            case 'del':
+                $result = ChannelHistory::deleteHistoryEntry($token);
+                $message = ($result['success'] ?? false)
+                    ? "🗑️ Riwayat dengan ID `{$token}` sudah dihapus."
+                    : "❌ " . ($result['message'] ?? 'Gagal menghapus riwayat.');
+
+                $this->bot->sendMessage($chatId, $message, 'Markdown');
+                break;
         }
     }
     

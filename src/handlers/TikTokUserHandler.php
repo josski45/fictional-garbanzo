@@ -3,6 +3,7 @@
 namespace JosskiTools\Handlers;
 
 use JosskiTools\Utils\TelegramBot;
+use JosskiTools\Utils\UserLogger;
 use JosskiTools\Api\SSSTikProClient;
 use JosskiTools\Helpers\ErrorHelper;
 use JosskiTools\Helpers\KeyboardHelper;
@@ -31,6 +32,12 @@ class TikTokUserHandler {
      * @param int $page Page number (0-5)
      */
     public function handle($chatId, $userId, $username = '', $page = 0) {
+        // Log command usage
+        UserLogger::logCommand($userId, '/ttuser', [
+            'username' => $username,
+            'page' => $page
+        ]);
+        
         // Stats manager not needed in modular version
         // global $statsManager;
         
@@ -46,7 +53,7 @@ class TikTokUserHandler {
             return;
         }
         
-        // Send loading message
+        // Send loading message and reuse it for status updates
         $loadingMsg = $this->bot->sendMessage($chatId, "⏳ Fetching videos from @{$username}...\n\nPage: {$page}");
         $loadingMsgId = $loadingMsg['result']['message_id'] ?? null;
         
@@ -56,37 +63,40 @@ class TikTokUserHandler {
             $result = $client->getUserVideos($username, $page);
             
             if (!$result['success']) {
-                if ($loadingMsgId) {
-                    $this->bot->deleteMessage($chatId, $loadingMsgId);
-                }
-                
                 $errorMsg = ErrorHelper::getErrorMessage(null, $result['error'] ?? 'Failed to fetch videos');
-                $this->bot->sendMessage($chatId, $errorMsg);
-                
-                // Stats tracking removed for modular version
+
+                if ($loadingMsgId) {
+                    $this->bot->editMessageText($chatId, $loadingMsgId, $errorMsg);
+                } else {
+                    $this->bot->sendMessage($chatId, $errorMsg);
+                }
+
                 return;
             }
-            
-            // Delete loading message
+
             if ($loadingMsgId) {
-                $this->bot->deleteMessage($chatId, $loadingMsgId);
+                $this->bot->editMessageText(
+                    $chatId,
+                    $loadingMsgId,
+                    $this->buildStatusMessage($result, true),
+                    'Markdown'
+                );
             }
-            
+
             // Send results
-            $this->sendVideoList($chatId, $result);
+            $this->sendVideoList($chatId, $result, $loadingMsgId);
             
             // Increment success counter
             // Stats tracking removed for modular version
             
         } catch (\Exception $e) {
-            if ($loadingMsgId) {
-                $this->bot->deleteMessage($chatId, $loadingMsgId);
-            }
-            
             $errorMsg = ErrorHelper::getErrorMessage(null, $e->getMessage());
-            $this->bot->sendMessage($chatId, $errorMsg . "\n\n💡 If this persists, contact admin");
-            
-            // Stats tracking removed for modular version
+
+            if ($loadingMsgId) {
+                $this->bot->editMessageText($chatId, $loadingMsgId, $errorMsg . "\n\n💡 If this persists, contact admin");
+            } else {
+                $this->bot->sendMessage($chatId, $errorMsg . "\n\n💡 If this persists, contact admin");
+            }
         }
     }
     
@@ -94,6 +104,11 @@ class TikTokUserHandler {
      * Handle download ALL videos (all pages)
      */
     public function handleDownloadAll($chatId, $userId, $username = '') {
+        // Log command usage
+        UserLogger::logCommand($userId, '/ttall', [
+            'username' => $username
+        ]);
+        
         // Stats manager not needed in modular version
         // global $statsManager;
         
@@ -137,105 +152,86 @@ class TikTokUserHandler {
             $result = $client->getAllUserVideos($username);
             
             if (!$result['success']) {
-                if ($processingMsgId) {
-                    $this->bot->deleteMessage($chatId, $processingMsgId);
-                }
-                
                 $errorMsg = ErrorHelper::getErrorMessage(null, 'Failed to fetch videos');
-                $this->bot->sendMessage($chatId, $errorMsg);
-                
-                // Stats tracking removed for modular version
+
+                if ($processingMsgId) {
+                    $this->bot->editMessageText($chatId, $processingMsgId, $errorMsg);
+                } else {
+                    $this->bot->sendMessage($chatId, $errorMsg);
+                }
+
                 return;
             }
-            
-            // Update progress
+
             if ($processingMsgId) {
-                $this->bot->editMessage($chatId, $processingMsgId, "✅ Found {$result['total_videos']} videos!\n\nPreparing to send...");
+                $this->bot->editMessageText(
+                    $chatId,
+                    $processingMsgId,
+                    "✅ Found {$result['total_videos']} videos!\n\nPreparing to send..."
+                );
             }
             
             // Send videos in batches
             $this->sendVideosBatch($chatId, $result['videos'], $username);
             
-            // Delete processing message
+            $completionText = "✅ *Download Complete!*\n\n";
+            $completionText .= "Username: @{$username}\n";
+            $completionText .= "Total Videos: {$result['total_videos']}\n\n";
+            $completionText .= "All download links have been sent! 🎉";
+
             if ($processingMsgId) {
-                $this->bot->deleteMessage($chatId, $processingMsgId);
+                $this->bot->editMessageText($chatId, $processingMsgId, $completionText, 'Markdown');
+            } else {
+                $this->bot->sendMessage($chatId, $completionText, 'Markdown');
             }
-            
-            // Send completion message
-            $completionMsg = "✅ *Download Complete!*\n\n";
-            $completionMsg .= "Username: @{$username}\n";
-            $completionMsg .= "Total Videos: {$result['total_videos']}\n\n";
-            $completionMsg .= "All download links have been sent! 🎉";
-            
-            $this->bot->sendMessage($chatId, $completionMsg, 'Markdown');
             
             // Stats tracking removed for modular version
             
         } catch (\Exception $e) {
-            if ($processingMsgId) {
-                $this->bot->deleteMessage($chatId, $processingMsgId);
-            }
-            
             $errorMsg = ErrorHelper::getErrorMessage(null, $e->getMessage());
-            $this->bot->sendMessage($chatId, $errorMsg . "\n\n💡 If this persists, contact admin");
-            
-            // Stats tracking removed for modular version
+
+            if ($processingMsgId) {
+                $this->bot->editMessageText($chatId, $processingMsgId, $errorMsg . "\n\n💡 If this persists, contact admin");
+            } else {
+                $this->bot->sendMessage($chatId, $errorMsg . "\n\n💡 If this persists, contact admin");
+            }
         }
     }
     
     /**
      * Send video list to user - AUTO DOWNLOAD
      */
-    private function sendVideoList($chatId, $result) {
+    private function sendVideoList($chatId, $result, $statusMessageId = null) {
         $username = $result['username'];
         $page = $result['page'];
         $videos = $result['videos'];
         $hasMore = $result['has_more'];
         
-        // Header message
-        $message = "📱 *TIKTOK USER VIDEOS*\n\n";
-        $message .= "👤 Username: @{$username}\n";
-        $message .= "📄 Page: {$page}\n";
-        $message .= "📹 Videos Found: " . count($videos) . "\n\n";
-        $message .= "⏳ Sending videos... Please wait...\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n";
-        
-        // Send header
-        $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $headerMessage = $this->buildStatusMessage($result, true);
+        $activeMessageId = $statusMessageId;
+
+        if ($statusMessageId) {
+            $this->bot->editMessageText($chatId, $statusMessageId, $headerMessage, 'Markdown');
+        } else {
+            $sentMessage = $this->bot->sendMessage($chatId, $headerMessage, 'Markdown');
+            $activeMessageId = $sentMessage['result']['message_id'] ?? null;
+        }
         
         // Send all videos directly (auto download)
         $this->sendVideoBatch($chatId, $videos, 1);
         
-        // Navigation buttons
-        $keyboard = [
-            'inline_keyboard' => []
-        ];
-        
-        // Previous button
-        if ($page > 0) {
-            $keyboard['inline_keyboard'][] = [
-                ['text' => '⬅️ Previous Page', 'callback_data' => "ttuser_{$username}_" . ($page - 1)]
-            ];
+        $keyboard = $this->buildNavigationKeyboard($username, $page, $hasMore);
+
+        $completionMessage = $this->buildStatusMessage($result, false) . "\n";
+        $completionMessage .= $hasMore && $page < 5
+            ? "➡️ More videos available on next page"
+            : "📌 No more videos";
+
+        if ($activeMessageId) {
+            $this->bot->editMessageText($chatId, $activeMessageId, $completionMessage, 'Markdown', $keyboard);
+        } else {
+            $this->bot->sendMessage($chatId, $completionMessage, 'Markdown', $keyboard);
         }
-        
-        // Next button
-        if ($hasMore && $page < 5) {
-            $keyboard['inline_keyboard'][] = [
-                ['text' => 'Next Page ➡️', 'callback_data' => "ttuser_{$username}_" . ($page + 1)]
-            ];
-        }
-        
-        // Download all button
-        $keyboard['inline_keyboard'][] = [
-            ['text' => '📥 Download ALL Videos (up to 60)', 'callback_data' => "ttall_{$username}"]
-        ];
-        
-        // Send navigation
-        $navMsg = "✅ *Videos sent!*\n\n";
-        $navMsg .= "📍 Page {$page} of 5\n";
-        $navMsg .= $hasMore ? "➡️ More videos available on next page" : "📌 No more videos";
-        
-        $this->bot->sendMessage($chatId, $navMsg, 'Markdown', $keyboard);
     }
     
     /**
@@ -337,5 +333,69 @@ class TikTokUserHandler {
         
         $keyboard = KeyboardHelper::getCancelKeyboard();
         $this->bot->sendMessage($chatId, $message, 'Markdown', $keyboard);
+    }
+
+    /**
+     * Build status message for header/completion states.
+     */
+    private function buildStatusMessage(array $result, bool $isProcessing): string {
+        $username = $this->escapeMarkdown($result['username'] ?? 'unknown');
+        $nickname = $result['nickname'] ?? null;
+        $page = (int)($result['page'] ?? 0);
+        $count = count($result['videos'] ?? []);
+
+        $message = "📱 *TIKTOK USER VIDEOS*\n\n";
+        $message .= "👤 Username: @{$username}\n";
+
+        if (!empty($nickname)) {
+            $message .= "🧾 Name: " . $this->escapeMarkdown($nickname) . "\n";
+        }
+
+        $message .= "📄 Page: {$page}\n";
+        $message .= "📹 Videos Found: {$count}\n\n";
+        $message .= $isProcessing
+            ? "⏳ Sending videos... Please wait..."
+            : "✅ Videos sent! Scroll up to view them.";
+
+        return $message;
+    }
+
+    /**
+     * Build navigation keyboard for pagination.
+     */
+    private function buildNavigationKeyboard(string $username, int $page, bool $hasMore): array {
+        $keyboard = ['inline_keyboard' => []];
+
+        if ($page > 0) {
+            $keyboard['inline_keyboard'][] = [
+                ['text' => '⬅️ Previous Page', 'callback_data' => "ttuser_{$username}_" . ($page - 1)]
+            ];
+        }
+
+        if ($hasMore && $page < 5) {
+            $keyboard['inline_keyboard'][] = [
+                ['text' => 'Next Page ➡️', 'callback_data' => "ttuser_{$username}_" . ($page + 1)]
+            ];
+        }
+
+        $keyboard['inline_keyboard'][] = [
+            ['text' => '📥 Download ALL Videos (up to 60)', 'callback_data' => "ttall_{$username}"]
+        ];
+
+        return $keyboard;
+    }
+
+    /**
+     * Escape Telegram Markdown special characters.
+     */
+    private function escapeMarkdown(string $text): string {
+        $replacements = [
+            '_' => '\\_',
+            '*' => '\\*',
+            '`' => '\\`',
+            '[' => '\\['
+        ];
+
+        return strtr($text, $replacements);
     }
 }

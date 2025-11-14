@@ -6,11 +6,35 @@ Bot Telegram untuk ekstraksi dan dekripsi file HAR dengan mudah.
 
 - 🔧 **HAR File Extractor** - Extract dan decrypt file HAR
 - 🔐 **Secret Key Protection** - Akses dengan secret key `JSK`
-- � **TXT Output** - Hasil dalam format .txt yang rapi
+- 📄 **TXT Output** - Hasil dalam format .txt yang rapi
 - 📊 **API Analysis** - Analyze encrypted API requests
 - 📥 **Media Downloader** - Bonus: Download files from URLs
+- 🎛️ **Web Setup Interface** - Setup bot via browser (NEW!)
 
 ## 🚀 Quick Start
+
+### Method 1: Web Setup (Recommended) ⭐
+
+1. **Upload files ke server**
+   ```bash
+   # Upload semua file via FTP/cPanel
+   ```
+
+2. **Buka Setup Menu**
+   ```
+   https://your-domain.com/setup.php
+   Password: joss2024
+   ```
+
+3. **Ikuti wizard:**
+   - Edit .env (isi BOT_TOKEN dari @BotFather)
+   - Setup Webhook
+   - Fix Permissions
+   - Done! 🎉
+
+📚 **Panduan lengkap:** [SETUP_GUIDE.md](SETUP_GUIDE.md)
+
+### Method 2: Manual Setup
 
 ### 1. Install Dependencies
 ```bash

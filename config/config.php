@@ -93,6 +93,35 @@ function env($key, $default = null) {
     return $default;
 }
 
+    function sanitizeVersionValue($value, $default) {
+        if ($value === null) {
+            return $default;
+        }
+
+        $stringValue = trim((string) $value);
+
+        if ($stringValue === '') {
+            return $default;
+        }
+
+        $hashPos = strpos($stringValue, '#');
+        if ($hashPos !== false) {
+            $stringValue = substr($stringValue, 0, $hashPos);
+        }
+
+        $stringValue = trim($stringValue);
+
+        if ($stringValue === '') {
+            return $default;
+        }
+
+        return $stringValue;
+    }
+
+    $defaultApiVersion = sanitizeVersionValue(env('NEKOLABS_API_VERSION', 'v5'), 'v5');
+    $youtubeApiVersion = sanitizeVersionValue(env('NEKOLABS_YOUTUBE_VERSION', 'v1'), 'v1');
+    $aioApiVersion = sanitizeVersionValue(env('NEKOLABS_AIO_VERSION', $defaultApiVersion), $defaultApiVersion);
+
 return [
     // Telegram Bot Token
     'bot_token' => env('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE'),
@@ -110,7 +139,9 @@ return [
     'FERDEV_API_KEY' => env('FERDEV_API_KEY', ''),
 
     // NekoLabs API Settings
-    'NEKOLABS_API_VERSION' => env('NEKOLABS_API_VERSION', 'v1'),
+    'NEKOLABS_API_VERSION' => $defaultApiVersion,
+    'NEKOLABS_YOUTUBE_VERSION' => $youtubeApiVersion,
+    'NEKOLABS_AIO_VERSION' => $aioApiVersion,
 
     // Admin User IDs (comma separated)
     'admin_ids' => array_filter(array_map('intval', explode(',', env('ADMIN_IDS', '')))),

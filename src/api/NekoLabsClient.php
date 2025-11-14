@@ -30,21 +30,38 @@ class NekoLabsClient {
      * @param string $url URL to download
      * @return array Response data
      */
-    public function download($url) {
-        $endpoint = "/downloader/aio/{$this->version}";
+    public function download($url, $platform = null, array $options = []) {
+        $platformKey = $platform ? strtolower($platform) : null;
+        $version = $options['version'] ?? $this->version;
 
-        Logger::apiRequest('NekoLabs', $endpoint, ['url' => $url]);
+        $endpoint = $this->buildEndpoint($platformKey, $version);
+        $queryParams = $this->buildQueryParams($url, $platformKey, $options);
 
-        $result = $this->makeRequest($endpoint, ['url' => $url]);
+        Logger::apiRequest('NekoLabs', $endpoint, [
+            'url' => $url,
+            'platform' => $platformKey ?? 'aio',
+            'version' => $version,
+            'format' => $options['format'] ?? null
+        ]);
+
+        $result = $this->makeRequest($endpoint, $queryParams);
 
         if ($result['success']) {
+            if ($platformKey === 'youtube') {
+                $result['result'] = $this->normalizeYoutubeResult($result['result'] ?? [], $options);
+            }
+
             Logger::apiResponse('NekoLabs', true, [
                 'source' => $result['result']['source'] ?? 'unknown',
-                'type' => $result['result']['type'] ?? 'unknown'
+                'type' => $result['result']['type'] ?? 'unknown',
+                'platform' => $platformKey ?? 'aio',
+                'version' => $version
             ]);
         } else {
             Logger::apiResponse('NekoLabs', false, [
-                'error' => $result['error'] ?? 'Unknown error'
+                'error' => $result['error'] ?? 'Unknown error',
+                'platform' => $platformKey ?? 'aio',
+                'version' => $version
             ]);
         }
 
@@ -316,5 +333,190 @@ class NekoLabsClient {
         }
 
         return 'unknown';
+    }
+
+    /**
+     * Build API endpoint based on platform and version
+     */
+    private function buildEndpoint($platform = null, $version = 'v1') {
+        $version = $version ?: 'v1';
+
+        if ($platform === 'youtube') {
+            return "/downloader/youtube/{$version}";
+        }
+
+        return "/downloader/aio/{$version}";
+    }
+
+    /**
+     * Build query parameters for request
+     */
+    private function buildQueryParams($url, $platform = null, array $options = []) {
+        $params = ['url' => $url];
+
+        if (isset($options['format'])) {
+            $params['format'] = strtolower((string)$options['format']);
+        }
+
+        if (isset($options['quality'])) {
+            $params['quality'] = $options['quality'];
+        }
+
+        if (!empty($options['extra_params']) && is_array($options['extra_params'])) {
+            $params = array_merge($params, $options['extra_params']);
+        }
+
+        return $params;
+    }
+
+    /**
+     * Normalize YouTube response structure to match internal expectation
+     */
+    private function normalizeYoutubeResult(array $data, array $options = []) {
+        $format = strtolower($options['format'] ?? ($data['format'] ?? ''));
+        $type = strtolower($data['type'] ?? '');
+
+        if ($format === 'mp3') {
+            $mediaType = 'audio';
+        } elseif ($format === 'mp4') {
+            $mediaType = 'video';
+        } elseif ($type === 'audio' || $type === 'video') {
+            $mediaType = $type;
+        } else {
+            $mediaType = 'audio';
+        }
+
+        $durationSeconds = $this->parseDurationToSeconds($data['duration'] ?? null);
+
+        $media = [
+            'type' => $mediaType,
+            'url' => $data['downloadUrl'] ?? $data['url'] ?? null,
+            'format' => $format ?: ($data['format'] ?? null),
+            'quality' => $data['quality'] ?? null,
+            'duration' => $durationSeconds,
+        ];
+
+        if (isset($data['downloadUrl'])) {
+            $media['download_url'] = $data['downloadUrl'];
+        }
+
+        if (isset($data['filesize'])) {
+            $media['data_size'] = $data['filesize'];
+        } elseif (isset($data['size'])) {
+            $media['data_size'] = $data['size'];
+        }
+
+        $mediaUrl = $data['downloadUrl'] ?? $data['url'] ?? null;
+
+        if (!$mediaUrl) {
+            Logger::warning('YouTube response missing download URL', [
+                'format' => $format ?: ($data['format'] ?? null)
+            ]);
+        }
+
+        $media = [
+            'type' => $mediaType,
+            'url' => $mediaUrl
+        ];
+
+        if ($format || isset($data['format'])) {
+            $media['format'] = $format ?: $data['format'];
+        }
+
+        if (isset($data['quality']) && $data['quality'] !== '') {
+            $media['quality'] = $data['quality'];
+        }
+
+        if ($durationSeconds !== null) {
+            $media['duration'] = $durationSeconds;
+        }
+
+        if (isset($data['downloadUrl'])) {
+            $media['download_url'] = $data['downloadUrl'];
+        }
+
+        if (isset($data['filesize'])) {
+            $media['data_size'] = $data['filesize'];
+        } elseif (isset($data['size'])) {
+            $media['data_size'] = $data['size'];
+        }
+
+        $normalized = [
+            'source' => 'youtube',
+            'title' => $data['title'] ?? null,
+            'type' => $mediaType,
+            'format' => $format ?: ($data['format'] ?? null),
+            'duration' => $durationSeconds,
+            'thumbnail' => $data['cover'] ?? $data['thumbnail'] ?? null,
+            'medias' => [$media]
+        ];
+
+        if (!$mediaUrl) {
+            $normalized['medias'] = [];
+        }
+
+        if (!empty($data['author'])) {
+            $normalized['author'] = $data['author'];
+        }
+
+        if (!empty($data['description'])) {
+            $normalized['description'] = $data['description'];
+        }
+
+        return array_filter($normalized, function($value) {
+            return $value !== null && $value !== '';
+        });
+    }
+
+    /**
+     * Convert duration string (e.g., 04:32) to seconds
+     */
+    private function parseDurationToSeconds($duration) {
+        if ($duration === null) {
+            return null;
+        }
+
+        if (is_numeric($duration)) {
+            return (int)$duration;
+        }
+
+        if (!is_string($duration)) {
+            return null;
+        }
+
+        $duration = trim($duration);
+
+        if ($duration === '') {
+            return null;
+        }
+
+        $parts = explode(':', $duration);
+        $parts = array_map('trim', $parts);
+        $parts = array_filter($parts, function($part) {
+            return $part !== '';
+        });
+
+        if (empty($parts)) {
+            return null;
+        }
+
+        if (count($parts) > 3) {
+            $parts = array_slice($parts, -3);
+        }
+
+        $seconds = 0;
+        $multiplier = 1;
+
+        while (!empty($parts)) {
+            $value = array_pop($parts);
+            if (!is_numeric($value)) {
+                return null;
+            }
+
+            $seconds += (int)$value * $multiplier;
+            $multiplier *= 60;
+        }
+
+        return $seconds;
     }
 }

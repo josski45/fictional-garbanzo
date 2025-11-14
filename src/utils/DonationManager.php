@@ -17,22 +17,22 @@ class DonationManager {
         'supporter' => [
             'min_amount' => 10000,      // IDR
             'badge' => '🌟',
-            'title' => 'Supporter'
+            'title' => 'Pendukung'
         ],
         'patron' => [
             'min_amount' => 50000,
             'badge' => '⭐',
-            'title' => 'Patron'
+            'title' => 'Sahabat'
         ],
         'benefactor' => [
             'min_amount' => 100000,
             'badge' => '💎',
-            'title' => 'Benefactor'
+            'title' => 'Dermawan'
         ],
         'legend' => [
             'min_amount' => 500000,
             'badge' => '👑',
-            'title' => 'Legend'
+            'title' => 'Legenda'
         ]
     ];
 
@@ -185,7 +185,7 @@ class DonationManager {
             return null;
         }
 
-        return $donor['tier'] ?? 'Supporter';
+            return $donor['tier'] ?? 'Pendukung';
     }
 
     /**
@@ -272,22 +272,21 @@ class DonationManager {
      * Get donation info message
      */
     public static function getDonationInfo() {
-        $message = "💝 **DONATION INFORMATION**\n\n";
-        $message .= "This bot is **100% FREE** to use!\n";
-        $message .= "All features are available for everyone.\n\n";
-        $message .= "If you find this bot useful and want to support development, you can make a voluntary donation.\n\n";
-        $message .= "🎁 **Recognition Tiers:**\n\n";
+        $message = "💝 *Dukungan via Donasi*\n\n";
+        $message .= "Bot ini bisa dipakai gratis tanpa batas. Kalau kamu merasa terbantu, silakan dukung dengan donasi seikhlasnya. Nominal benar-benar bebas!\n\n";
+        $message .= "📷 Scan QRIS pada gambar atau gunakan aplikasi bank pilihanmu.\n\n";
+        $message .= "🎁 *Penghargaan Donatur*\n";
 
-        foreach (self::$tiers as $key => $tier) {
-            $message .= "{$tier['badge']} **{$tier['title']}** - " . self::formatAmount($tier['min_amount']) . "+\n";
+        foreach (self::$tiers as $tier) {
+            $message .= "{$tier['badge']} {$tier['title']} - mulai dari " . self::formatAmount($tier['min_amount']) . "\n";
         }
 
-        $message .= "\n📝 **Note:**\n";
-        $message .= "• Donations are voluntary\n";
-        $message .= "• No features locked behind paywall\n";
-        $message .= "• Donors get recognition badge\n";
-        $message .= "• All donations go to server costs & development\n\n";
-        $message .= "Thank you for your support! ❤️";
+        $message .= "\nℹ️ *Catatan:*\n";
+        $message .= "• Donasi bersifat sukarela, fitur tetap gratis\n";
+        $message .= "• Kirim bukti ke admin kalau mau namamu masuk leaderboard\n";
+        $message .= "• Seluruh donasi dipakai untuk biaya server dan pengembangan\n\n";
+        $message .= "Gunakan tombol di bawah untuk lihat profil donasimu atau papan peringkat.\n\n";
+        $message .= "Terima kasih sudah bantu menjaga bot ini tetap hidup! 🙏";
 
         return $message;
     }
@@ -299,18 +298,17 @@ class DonationManager {
         $donor = self::getDonor($userId);
 
         if ($donor === null || $donor['total_donated'] == 0) {
-            return "You haven't made any donations yet.\n\nType /donate to learn more about supporting the bot!";
+            return "Kamu belum pernah donasi.\n\nKetik /donate untuk melihat cara dukung bot ini.";
         }
 
-        $message = "👑 **YOUR DONOR PROFILE**\n\n";
-        $message .= "Badge: {$donor['badge']}\n";
-        $message .= "Tier: {$donor['tier']}\n";
-        $message .= "Total Donated: " . self::formatAmount($donor['total_donated']) . "\n";
-        $message .= "First Donation: {$donor['first_donation']}\n";
-        $message .= "Last Donation: {$donor['last_donation']}\n";
-        $message .= "Number of Donations: " . count($donor['donations']) . "\n\n";
-        $message .= "Thank you for your support! ❤️\n\n";
-        $message .= "Your generosity helps keep this bot running and improving!";
+        $message = "👑 *Profil Donatur Kamu*\n\n";
+        $message .= "Lencana: {$donor['badge']}\n";
+        $message .= "Level: {$donor['tier']}\n";
+        $message .= "Total Donasi: " . self::formatAmount($donor['total_donated']) . "\n";
+        $message .= "Donasi Pertama: {$donor['first_donation']}\n";
+        $message .= "Donasi Terakhir: {$donor['last_donation']}\n";
+        $message .= "Jumlah Transaksi: " . count($donor['donations']) . "\n\n";
+        $message .= "Terima kasih banyak! Dukunganmu bikin bot ini terus jalan dan berkembang. ❤️";
 
         return $message;
     }
@@ -321,12 +319,12 @@ class DonationManager {
     public static function getLeaderboard($limit = 10) {
         $topDonors = self::getTopDonors($limit);
 
-        $message = "🏆 **TOP DONORS LEADERBOARD**\n\n";
+        $message = "🏆 *Papan Donatur Tertinggi*\n\n";
 
         $rank = 1;
         foreach ($topDonors as $userId => $donor) {
             $badge = $donor['badge'] ?? '🌟';
-            $tier = $donor['tier'] ?? 'Supporter';
+            $tier = $donor['tier'] ?? 'Pendukung';
             $amount = self::formatAmount($donor['total_donated']);
 
             $medal = '';
@@ -334,13 +332,13 @@ class DonationManager {
             elseif ($rank == 2) $medal = '🥈';
             elseif ($rank == 3) $medal = '🥉';
 
-            $message .= "{$medal} **#{$rank}** {$badge} {$tier}\n";
-            $message .= "   Donated: {$amount}\n\n";
+            $message .= "{$medal} *#{$rank}* {$badge} {$tier}\n";
+            $message .= "   Total: {$amount}\n\n";
 
             $rank++;
         }
 
-        $message .= "Thank you to all our supporters! ❤️";
+        $message .= "Terima kasih kepada semua yang sudah mendukung! ❤️";
 
         return $message;
     }

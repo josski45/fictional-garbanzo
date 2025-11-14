@@ -2,6 +2,12 @@
 /**
  * Deploy Configuration
  * Edit file ini untuk customize deployment
+ * 
+ * CARA EDIT VIA SETUP.PHP:
+ * 1. Buka: https://yourdomain.com/setup.php
+ * 2. Login dengan password
+ * 3. Pilih menu "Deployment Config"
+ * 4. Edit konfigurasi sesuai kebutuhan
  */
 
 return [
@@ -14,13 +20,23 @@ return [
         // Config
         'config/config.php',
         '.env',
+        
+        // Main entry point
+        'index.php',
+        'autoload.php',
 
         // Public
         'public/webhook.php',
+        'public/setup.php',
+        'public/view_logs.php',
+        'public/test_autoload.php',
+        'public/.htaccess',
+        'public/qrisku.jpg',
         'public/energetic-orange-fox-mascot-giving-thumbs-up.png',
 
         // API
         'src/api/NekoLabsClient.php',
+        'src/api/SSSTikProClient.php',
 
         // Handlers
         'src/handlers/AdminHandler.php',
@@ -41,6 +57,7 @@ return [
         // Utils
         'src/utils/AdvancedStats.php',
         'src/utils/ChannelHistory.php',
+        'src/utils/DatabaseHelper.php',
         'src/utils/DonationManager.php',
         'src/utils/DownloadHistory.php',
         'src/utils/Encryption.php',
@@ -55,17 +72,9 @@ return [
         'src/utils/UserLogger.php',
         'src/utils/UserManager.php',
 
-        // Setup
-        'setup_webhook.php',
-        'update_webhook.php',
-
         // Docs
         'README.md',
         'CHANGES.md',
-        'CHANNEL_HISTORY_INTEGRATION.md',
-        'MAINTENANCE_MODE_GUIDE.md',
-        'NEW_FEATURES_v2.3.0.md',
-        'RELEASE_NOTES_v2.3.1.md',
     ],
 
     // Empty directories to create

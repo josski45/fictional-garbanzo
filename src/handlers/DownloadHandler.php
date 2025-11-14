@@ -25,6 +25,8 @@ class DownloadHandler {
     private $config;
     private $statsManager;
     private $nekoLabsClient;
+    private $youtubeVersion;
+    private $aioVersion;
 
     public function __construct($bot, $sessionManager, $config) {
         $this->bot = $bot;
@@ -32,9 +34,13 @@ class DownloadHandler {
         $this->config = $config;
         $this->statsManager = new StatsManager();
 
-        // Initialize NekoLabs client with default version v1
-        $apiVersion = $config['NEKOLABS_API_VERSION'] ?? 'v1';
-        $this->nekoLabsClient = new NekoLabsClient($apiVersion);
+        // API version configuration
+        $defaultVersion = $config['NEKOLABS_API_VERSION'] ?? 'v5';
+        $this->youtubeVersion = $config['NEKOLABS_YOUTUBE_VERSION'] ?? 'v1';
+        $this->aioVersion = $config['NEKOLABS_AIO_VERSION'] ?? $defaultVersion;
+
+        // Initialize NekoLabs client using default AIO version
+        $this->nekoLabsClient = new NekoLabsClient($this->aioVersion);
 
         // Initialize logging and utilities
         Logger::init($config['directories']['logs'] ?? null);
@@ -110,6 +116,48 @@ class DownloadHandler {
         // Send loading animation
         $loadingMsgId = $this->bot->sendLoadingMessage($chatId, "Initializing", $replyToMessageId);
 
+        // Determine API platform and options
+        $apiPlatform = null;
+        $apiOptions = [];
+
+        switch ($platform) {
+            case 'ytmp3':
+                $apiPlatform = 'youtube';
+                $apiOptions['format'] = 'mp3';
+                $apiOptions['version'] = $this->youtubeVersion;
+                break;
+
+            case 'ytmp4':
+                $apiPlatform = 'youtube';
+                $apiOptions['format'] = 'mp4';
+                $apiOptions['version'] = $this->youtubeVersion;
+                break;
+
+            case 'youtube':
+                $apiPlatform = 'youtube';
+                $apiOptions['format'] = 'mp4';
+                $apiOptions['version'] = $this->youtubeVersion;
+                break;
+
+            default:
+                // Use auto-detect if platform unknown
+                $apiPlatform = ($platform && $platform !== 'unknown') ? $platform : null;
+                $apiOptions['version'] = $this->aioVersion;
+                break;
+        }
+
+        if (empty($apiOptions['version'])) {
+            $apiOptions['version'] = $this->nekoLabsClient->getVersion();
+        }
+
+            Logger::debug("NekoLabs API route resolved", [
+                'chat_id' => $chatId,
+                'requested_platform' => $platform,
+                'api_platform' => $apiPlatform ?? 'aio',
+                'format' => $apiOptions['format'] ?? null,
+                'version' => $apiOptions['version'] ?? $this->nekoLabsClient->getVersion()
+            ]);
+
         try {
             // Update loading - Step 1: Validating
             if ($loadingMsgId) {
@@ -122,7 +170,46 @@ class DownloadHandler {
             }
 
             // Call NekoLabs API
-            $result = $this->nekoLabsClient->download($url);
+            $result = $this->nekoLabsClient->download($url, $apiPlatform, $apiOptions);
+
+            // Automatic fallback for YouTube MP4 errors on deprecated versions
+            if (
+                !$result['success'] &&
+                $apiPlatform === 'youtube' &&
+                strtolower($apiOptions['format'] ?? '') === 'mp4'
+            ) {
+                $originalVersion = $apiOptions['version'] ?? null;
+                $fallbackVersions = ['v5', 'v4', 'v3', 'v2'];
+
+                foreach ($fallbackVersions as $fallbackVersion) {
+                    if ($fallbackVersion === $originalVersion) {
+                        continue;
+                    }
+
+                    Logger::warning('YouTube MP4 fallback in progress', [
+                        'chat_id' => $chatId,
+                        'url' => $url,
+                        'previous_version' => $originalVersion,
+                        'fallback_version' => $fallbackVersion,
+                        'error' => $result['error'] ?? 'unknown'
+                    ]);
+
+                    $apiOptions['version'] = $fallbackVersion;
+                    $result = $this->nekoLabsClient->download($url, $apiPlatform, $apiOptions);
+
+                    if ($result['success']) {
+                        Logger::info('YouTube MP4 fallback succeeded', [
+                            'chat_id' => $chatId,
+                            'url' => $url,
+                            'effective_version' => $fallbackVersion
+                        ]);
+                        break;
+                    }
+                }
+
+                // Restore original version for downstream logging/logic
+                $apiOptions['version'] = $originalVersion;
+            }
 
             // Check if API call was successful
             if (!$result['success']) {
@@ -195,38 +282,105 @@ class DownloadHandler {
                 $result['result']['type'] ?? null
             );
 
+            $downloadContext = [
+                'platform' => $result['result']['source'] ?? ($platform ?? 'unknown'),
+                'title' => $result['result']['title'] ?? null,
+                'url' => $url,
+                'type' => $result['result']['type'] ?? null,
+                'thumbnail' => $result['result']['thumbnail'] ?? null,
+                'author' => $result['result']['author'] ?? null
+            ];
+
             // Handle response using NekoLabsResponseHandler
             $responseHandler = new NekoLabsResponseHandler($this->bot);
-            $responseHandler->handle($chatId, $result['result'], $loadingMsgId);
+            $responseData = $responseHandler->handle($chatId, $result['result'], $loadingMsgId, $platform, $downloadContext);
 
-            // Forward to user's history channel if setup
-            if (ChannelHistory::hasChannel($chatId)) {
+            $historyDownloadInfo = $responseData['downloadInfo'] ?? $downloadContext;
+            if (!empty($responseData['messages'])) {
+                ChannelHistory::rememberMessages($chatId, $responseData['messages'], $historyDownloadInfo);
+            }
+
+            // Forward to user's history channel if setup (admin only)
+            // Note: Only admin can setup channel, so if channel exists, forward it
+            $adminIds = $this->config['admin_ids'] ?? [];
+            $isAdmin = in_array($chatId, $adminIds);
+            
+            // Check if this chat has a channel or if admin has a channel setup
+            $targetUserId = $chatId;
+            
+            // If not admin in this chat, check if any admin has channel setup
+            if (!$isAdmin) {
+                foreach ($adminIds as $adminId) {
+                    if (ChannelHistory::hasChannel($adminId)) {
+                        $targetUserId = $adminId;
+                        $isAdmin = true;
+                        Logger::info("Using admin's channel for forwarding", [
+                            'admin_id' => $adminId,
+                            'requester_id' => $chatId
+                        ]);
+                        break;
+                    }
+                }
+            }
+            
+            if ($isAdmin && ChannelHistory::hasChannel($targetUserId)) {
                 try {
-                    // Get first media from result
+                    // Get media type from result (not from medias array)
+                    $mediaType = $result['result']['type'] ?? 'video';
                     $firstMedia = $result['result']['medias'][0] ?? null;
 
                     if ($firstMedia && isset($firstMedia['url'])) {
-                        ChannelHistory::sendToChannel(
-                            $chatId,
+                        Logger::info("Forwarding to channel", [
+                            'target_user_id' => $targetUserId,
+                            'requester_id' => $chatId,
+                            'media_type' => $mediaType,
+                            'media_type_from_array' => $firstMedia['type'] ?? 'unknown',
+                            'has_url' => !empty($firstMedia['url']),
+                            'platform' => $result['result']['source'] ?? 'unknown'
+                        ]);
+
+                        $channelResult = ChannelHistory::sendToChannel(
+                            $targetUserId,
                             $firstMedia['url'],
-                            $firstMedia['type'] ?? 'video',
-                            [
-                                'platform' => $result['result']['source'] ?? 'unknown',
-                                'title' => $result['result']['title'] ?? 'No title',
-                                'url' => $url
-                            ]
+                            $mediaType, // Use type from result, not from medias array
+                            $historyDownloadInfo
                         );
 
+                        Logger::info("Channel forward result", [
+                            'success' => $channelResult['success'] ?? false,
+                            'token' => $channelResult['token'] ?? null,
+                            'message' => $channelResult['message'] ?? null
+                        ]);
+
+                        if (!empty($channelResult['token']) && !empty($responseData['messages'])) {
+                            ChannelHistory::rememberMessages(
+                                $targetUserId,
+                                $responseData['messages'],
+                                $historyDownloadInfo,
+                                ['channel_token' => $channelResult['token']]
+                            );
+                        }
+
                         Logger::debug("Forwarded to user's history channel", [
-                            'user_id' => $chatId,
+                            'target_user_id' => $targetUserId,
+                            'requester_id' => $chatId,
                             'platform' => $result['result']['source'] ?? 'unknown'
+                        ]);
+                    } else {
+                        Logger::warning("No media to forward to channel", [
+                            'target_user_id' => $targetUserId,
+                            'requester_id' => $chatId,
+                            'has_first_media' => !empty($firstMedia),
+                            'has_url' => !empty($firstMedia['url'] ?? null)
                         ]);
                     }
                 } catch (\Exception $e) {
                     // Log error but don't fail the download
                     Logger::warning("Failed to forward to history channel", [
-                        'user_id' => $chatId,
-                        'error' => $e->getMessage()
+                        'target_user_id' => $targetUserId,
+                        'requester_id' => $chatId,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
                     ]);
                 }
             }
@@ -265,8 +419,14 @@ class DownloadHandler {
      * Handle download with specific API version
      */
     public function handleWithVersion($chatId, $url, $version, $platform = null, $replyToMessageId = null) {
-        // Set API version
+        $previousClientVersion = $this->nekoLabsClient->getVersion();
+        $previousYoutubeVersion = $this->youtubeVersion;
+        $previousAioVersion = $this->aioVersion;
+
+        // Apply temporary version override
         $this->nekoLabsClient->setVersion($version);
+        $this->youtubeVersion = $version;
+        $this->aioVersion = $version;
 
         Logger::info("Download request with specific version", [
             'chat_id' => $chatId,
@@ -276,6 +436,11 @@ class DownloadHandler {
 
         // Call regular handle method
         $this->handle($chatId, $url, $platform, $replyToMessageId);
+
+        // Restore previous configuration
+        $this->nekoLabsClient->setVersion($previousClientVersion);
+        $this->youtubeVersion = $previousYoutubeVersion;
+        $this->aioVersion = $previousAioVersion;
     }
 
     /**

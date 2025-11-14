@@ -10,6 +10,9 @@ use JosskiTools\Utils\Logger;
 class NekoLabsResponseHandler {
 
     private $bot;
+    private $requestedFormat;
+    private $sentMessages = [];
+    private $downloadContext = [];
 
     public function __construct($bot) {
         $this->bot = $bot;
@@ -18,8 +21,13 @@ class NekoLabsResponseHandler {
     /**
      * Handle response from NekoLabs API
      */
-    public function handle($chatId, $result, $loadingMsgId = null) {
+    public function handle($chatId, $result, $loadingMsgId = null, $requestedFormat = null, array $downloadContext = []) {
+        $this->sentMessages = [];
+        $this->requestedFormat = $requestedFormat;
+        $this->downloadContext = $downloadContext;
+
         try {
+
             $source = $result['source'] ?? 'unknown';
             $type = $result['type'] ?? 'unknown';
 
@@ -41,6 +49,11 @@ class NekoLabsResponseHandler {
                     break;
 
                 case 'audio':
+                    Logger::info("Handling audio response", [
+                        'chat_id' => $chatId,
+                        'source' => $source,
+                        'media_count' => count($result['medias'] ?? [])
+                    ]);
                     $this->handleAudio($chatId, $result);
                     break;
 
@@ -68,7 +81,15 @@ class NekoLabsResponseHandler {
                 $chatId,
                 "❌ Error processing response: " . $e->getMessage()
             );
+        } finally {
+            $this->requestedFormat = null;
+            $this->downloadContext = [];
         }
+
+        return [
+            'messages' => $this->sentMessages,
+            'downloadInfo' => $this->buildDownloadInfo($result)
+        ];
     }
 
     /**
@@ -86,6 +107,7 @@ class NekoLabsResponseHandler {
 
         // Try to send video
         $videoResult = $this->bot->sendVideo($chatId, $videoUrl, $caption, 'Markdown');
+        $this->recordMessage($videoResult, 'video');
 
         if (!($videoResult['ok'] ?? false)) {
             Logger::warning("Failed to send video, sending as text", [
@@ -95,7 +117,8 @@ class NekoLabsResponseHandler {
 
             // Fallback: send as text with download link
             $message = $caption . "\n\n📥 **Download:**\n" . $videoUrl;
-            $this->bot->sendMessage($chatId, $message, 'Markdown');
+            $fallback = $this->bot->sendMessage($chatId, $message, 'Markdown');
+            $this->recordMessage($fallback, 'text');
         }
     }
 
@@ -111,19 +134,43 @@ class NekoLabsResponseHandler {
         }
 
         $caption = $this->buildCaption($result);
+        $localFile = null;
 
-        // Try to send audio
-        $audioResult = $this->bot->sendAudio($chatId, $audioUrl, $caption, 'Markdown');
+        try {
+            $extension = $this->guessExtension($audioUrl, '.m4a');
+            $localFile = $this->downloadMediaToTemp($audioUrl, 'audio_', $extension);
 
-        if (!($audioResult['ok'] ?? false)) {
-            Logger::warning("Failed to send audio, sending as text", [
-                'chat_id' => $chatId,
-                'error' => $audioResult['description'] ?? 'Unknown'
-            ]);
+            if ($localFile) {
+                $audioResult = $this->bot->sendAudio($chatId, $localFile, $caption, 'Markdown');
 
-            // Fallback: send as text with download link
-            $message = $caption . "\n\n📥 **Download:**\n" . $audioUrl;
-            $this->bot->sendMessage($chatId, $message, 'Markdown');
+                if ($audioResult['ok'] ?? false) {
+                    $this->recordMessage($audioResult, 'audio');
+                } else {
+                    Logger::warning("Failed to send uploaded audio, falling back to link", [
+                        'chat_id' => $chatId,
+                        'error' => $audioResult['description'] ?? 'Unknown'
+                    ]);
+
+                    $this->sendAudioLinkFallback($chatId, $caption, $audioUrl, $audioResult['description'] ?? null);
+                }
+            } else {
+                Logger::warning("Failed to download audio before sending", [
+                    'chat_id' => $chatId,
+                    'url' => $audioUrl
+                ]);
+
+                $audioResult = $this->bot->sendAudio($chatId, $audioUrl, $caption, 'Markdown');
+
+                if ($audioResult['ok'] ?? false) {
+                    $this->recordMessage($audioResult, 'audio');
+                } else {
+                    $this->sendAudioLinkFallback($chatId, $caption, $audioUrl, $audioResult['description'] ?? null);
+                }
+            }
+        } finally {
+            if ($localFile && file_exists($localFile)) {
+                @unlink($localFile);
+            }
         }
     }
 
@@ -142,6 +189,7 @@ class NekoLabsResponseHandler {
 
         // Try to send photo
         $photoResult = $this->bot->sendPhoto($chatId, $imageUrl, $caption, 'Markdown');
+        $this->recordMessage($photoResult, 'photo');
 
         if (!($photoResult['ok'] ?? false)) {
             Logger::warning("Failed to send photo, sending as text", [
@@ -151,7 +199,8 @@ class NekoLabsResponseHandler {
 
             // Fallback: send as text with download link
             $message = $caption . "\n\n📥 **Download:**\n" . $imageUrl;
-            $this->bot->sendMessage($chatId, $message, 'Markdown');
+            $fallback = $this->bot->sendMessage($chatId, $message, 'Markdown');
+            $this->recordMessage($fallback, 'text');
         }
     }
 
@@ -169,7 +218,8 @@ class NekoLabsResponseHandler {
         $caption = $this->buildCaption($result);
 
         // Send caption first
-        $this->bot->sendMessage($chatId, $caption, 'Markdown');
+        $captionMessage = $this->bot->sendMessage($chatId, $caption, 'Markdown');
+        $this->recordMessage($captionMessage, 'text');
 
         // Group medias by type
         $videos = [];
@@ -193,7 +243,7 @@ class NekoLabsResponseHandler {
         }
 
         // Send videos (prioritize HD no watermark)
-        if (!empty($videos)) {
+        if (!empty($videos) && !$this->isAudioRequested()) {
             // Sort videos by quality (hd_no_watermark first)
             usort($videos, function($a, $b) {
                 $qualityOrder = ['hd_no_watermark' => 0, 'no_watermark' => 1, 'watermark' => 2];
@@ -209,6 +259,7 @@ class NekoLabsResponseHandler {
             $videoCaption = "🎬 **Quality:** {$quality}\n📦 **Size:** {$size}";
 
             $videoResult = $this->bot->sendVideo($chatId, $bestVideo['url'], $videoCaption, 'Markdown');
+            $this->recordMessage($videoResult, 'video');
 
             if (!($videoResult['ok'] ?? false)) {
                 // Fallback: send all video links
@@ -218,7 +269,8 @@ class NekoLabsResponseHandler {
                     $size = $this->formatFileSize($video['data_size'] ?? 0);
                     $message .= ($idx + 1) . ". [{$quality} - {$size}](" . $video['url'] . ")\n";
                 }
-                $this->bot->sendMessage($chatId, $message, 'Markdown');
+                $fallback = $this->bot->sendMessage($chatId, $message, 'Markdown');
+                $this->recordMessage($fallback, 'text');
             }
         }
 
@@ -228,12 +280,40 @@ class NekoLabsResponseHandler {
             $duration = $audio['duration'] ?? 0;
             $audioCaption = "🎵 **Duration:** " . gmdate("i:s", $duration);
 
-            $audioResult = $this->bot->sendAudio($chatId, $audio['url'], $audioCaption, 'Markdown');
+            $audioUrl = $audio['url'] ?? null;
 
-            if (!($audioResult['ok'] ?? false)) {
-                $message = "📥 **Audio Download:**\n" . $audio['url'];
-                $this->bot->sendMessage($chatId, $message);
+            if ($audioUrl) {
+                $localFile = null;
+                try {
+                    $extension = $this->guessExtension($audioUrl, '.m4a');
+                    $localFile = $this->downloadMediaToTemp($audioUrl, 'audio_', $extension);
+
+                    if ($localFile) {
+                        $audioResult = $this->bot->sendAudio($chatId, $localFile, $audioCaption, 'Markdown');
+                    } else {
+                        $audioResult = $this->bot->sendAudio($chatId, $audioUrl, $audioCaption, 'Markdown');
+                    }
+
+                    if ($audioResult['ok'] ?? false) {
+                        $this->recordMessage($audioResult, 'audio');
+                    } else {
+                        $this->sendAudioLinkFallback($chatId, $audioCaption, $audioUrl, $audioResult['description'] ?? null);
+                    }
+                } finally {
+                    if ($localFile && file_exists($localFile)) {
+                        @unlink($localFile);
+                    }
+                }
             }
+        } elseif ($this->isAudioRequested() && empty($audios) && !empty($videos)) {
+            // If audio requested but not available, inform user and share video link instead of sending video directly
+            $fallbackVideo = $videos[0];
+            $quality = $fallbackVideo['quality'] ?? 'unknown';
+            $size = $this->formatFileSize($fallbackVideo['data_size'] ?? 0);
+            $message = "⚠️ Audio format not available. Providing video link instead:\n\n";
+            $message .= "[{$quality} - {$size}]({$fallbackVideo['url']})";
+            $fallback = $this->bot->sendMessage($chatId, $message, 'Markdown');
+            $this->recordMessage($fallback, 'text');
         }
 
         // Send images if available
@@ -242,14 +322,17 @@ class NekoLabsResponseHandler {
                 if ($idx >= 3) {
                     // Limit to 3 images to avoid spam
                     $remaining = count($images) - 3;
-                    $this->bot->sendMessage($chatId, "...and {$remaining} more images");
+                    $moreMsg = $this->bot->sendMessage($chatId, "...and {$remaining} more images");
+                    $this->recordMessage($moreMsg, 'text');
                     break;
                 }
 
                 $photoResult = $this->bot->sendPhoto($chatId, $image['url']);
+                $this->recordMessage($photoResult, 'photo');
 
                 if (!($photoResult['ok'] ?? false)) {
-                    $this->bot->sendMessage($chatId, "📥 Image: " . $image['url']);
+                    $fallback = $this->bot->sendMessage($chatId, "📥 Image: " . $image['url']);
+                    $this->recordMessage($fallback, 'text');
                 }
 
                 // Small delay to avoid rate limits
@@ -285,7 +368,70 @@ class NekoLabsResponseHandler {
             }
         }
 
-        $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $response = $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $this->recordMessage($response, 'text');
+    }
+
+    private function recordMessage($response, $type, array $extra = []) {
+        if (!is_array($response) || !($response['ok'] ?? false)) {
+            return null;
+        }
+
+        $result = $response['result'] ?? [];
+        $messageId = $result['message_id'] ?? null;
+
+        if (!$messageId) {
+            return null;
+        }
+
+        $messageData = [
+            'message_id' => $messageId,
+            'type' => $extra['type'] ?? $type,
+            'file_id' => $extra['file_id'] ?? $this->extractFileId($result, $type)
+        ];
+
+        $this->sentMessages[] = $messageData;
+
+        return $messageData;
+    }
+
+    private function extractFileId(array $message, $type) {
+        switch ($type) {
+            case 'video':
+                return $message['video']['file_id'] ?? null;
+            case 'audio':
+                return $message['audio']['file_id'] ?? null;
+            case 'photo':
+            case 'image':
+                if (!empty($message['photo']) && is_array($message['photo'])) {
+                    $photos = $message['photo'];
+                    $last = end($photos);
+                    return $last['file_id'] ?? null;
+                }
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    private function buildDownloadInfo(array $result) {
+        $info = [
+            'platform' => $result['source'] ?? ($this->downloadContext['platform'] ?? 'unknown'),
+            'title' => $result['title'] ?? ($this->downloadContext['title'] ?? null),
+            'url' => $this->downloadContext['url'] ?? ($result['url'] ?? null),
+            'type' => $result['type'] ?? ($this->downloadContext['type'] ?? null),
+            'thumbnail' => $result['thumbnail'] ?? ($this->downloadContext['thumbnail'] ?? null),
+            'author' => $result['author'] ?? ($this->downloadContext['author'] ?? null)
+        ];
+
+        if (empty($info['url'])) {
+            $primaryMedia = $result['medias'][0]['url'] ?? null;
+            if ($primaryMedia) {
+                $info['url'] = $primaryMedia;
+            }
+        }
+
+        return $info;
     }
 
     /**
@@ -353,5 +499,116 @@ class NekoLabsResponseHandler {
         }
 
         return mb_substr($text, 0, $length) . '...';
+    }
+
+    /**
+     * Determine if user requested audio format explicitly
+     */
+    private function isAudioRequested() {
+        if (!$this->requestedFormat) {
+            return false;
+        }
+
+        $format = strtolower($this->requestedFormat);
+        $audioFormats = ['ytmp3', 'mp3', 'audio', 'spotify'];
+
+        return in_array($format, $audioFormats, true);
+    }
+
+    /**
+     * Download media to temporary file for uploading to Telegram
+     */
+    private function downloadMediaToTemp($url, $prefix = 'media_', $extension = '.tmp') {
+        $tempDir = __DIR__ . '/../../temp';
+
+        if (!is_dir($tempDir)) {
+            @mkdir($tempDir, 0777, true);
+        }
+
+        $tempPath = tempnam($tempDir, $prefix);
+        if ($tempPath === false) {
+            return null;
+        }
+
+        if ($extension) {
+            $newPath = $tempPath . $extension;
+            if (!@rename($tempPath, $newPath)) {
+                $newPath = $tempPath; // Fallback
+            }
+            $tempPath = $newPath;
+        }
+
+        $fp = fopen($tempPath, 'wb');
+        if (!$fp) {
+            @unlink($tempPath);
+            return null;
+        }
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $fp,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            CURLOPT_REFERER => 'https://www.youtube.com/'
+        ]);
+
+        $success = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        fclose($fp);
+
+        if (!$success || $httpCode >= 400) {
+            Logger::warning('Failed downloading media to temp', [
+                'url' => $url,
+                'http_code' => $httpCode,
+                'error' => $error
+            ]);
+            @unlink($tempPath);
+            return null;
+        }
+
+        return $tempPath;
+    }
+
+    /**
+     * Guess file extension based on URL hints
+     */
+    private function guessExtension($url, $default = '.tmp') {
+        $parsed = parse_url($url);
+        if (!empty($parsed['path'])) {
+            $ext = pathinfo($parsed['path'], PATHINFO_EXTENSION);
+            if ($ext) {
+                return '.' . strtolower($ext);
+            }
+        }
+
+        if (stripos($url, 'audio%2Fmp4') !== false || stripos($url, 'mime=audio/mp4') !== false) {
+            return '.m4a';
+        }
+
+        if (stripos($url, '.mp3') !== false) {
+            return '.mp3';
+        }
+
+        return $default;
+    }
+
+    /**
+     * Send fallback message with audio link
+     */
+    private function sendAudioLinkFallback($chatId, $caption, $audioUrl, $errorDescription = null) {
+        $message = $caption . "\n\n📥 **Audio Download:**\n" . $audioUrl;
+
+        if ($errorDescription) {
+            $message .= "\n\n⚠️ _" . $errorDescription . "_";
+        }
+
+        $response = $this->bot->sendMessage($chatId, $message, 'Markdown');
+        $this->recordMessage($response, 'text');
+
+        return $response;
     }
 }

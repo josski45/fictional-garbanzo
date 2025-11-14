@@ -6,6 +6,7 @@ use JosskiTools\Utils\TelegramBot;
 use JosskiTools\Utils\Logger;
 use JosskiTools\Utils\UserLogger;
 use JosskiTools\Utils\UserManager;
+use JosskiTools\Utils\ChannelHistory;
 use JosskiTools\Helpers\KeyboardHelper;
 
 /**
@@ -35,6 +36,28 @@ class MessageHandler {
     }
     
     /**
+     * Handle regular text message entry point from index.php
+     */
+    public function handleTextMessage($chatId, $userId, array $message) {
+        $this->handle($message);
+    }
+
+    /**
+     * Handle unsupported photo uploads gracefully
+     */
+    public function handlePhoto($chatId, $userId, array $message) {
+        Logger::info("Photo received but feature not supported", [
+            'chat_id' => $chatId,
+            'user_id' => $userId,
+        ]);
+
+        $this->bot->sendMessage(
+            $chatId,
+            "📷 Saat ini bot belum bisa memproses foto langsung. Kirim link atau gunakan menu yang tersedia ya."
+        );
+    }
+    
+    /**
      * Handle incoming message
      */
     public function handle($message) {
@@ -44,6 +67,9 @@ class MessageHandler {
         $userId = $message['from']['id'] ?? null;
         $username = $message['from']['username'] ?? 'Unknown';
         $text = $message['text'] ?? '';
+        if ($text === '' && isset($message['caption'])) {
+            $text = $message['caption'];
+        }
         $chatType = $message['chat']['type'] ?? 'private';
 
         if (!$chatId || !$userId) {
@@ -77,6 +103,12 @@ class MessageHandler {
             return;
         }
         
+        if (isset($message['forward_from_chat']) && $chatType === 'private') {
+            if ($this->handleForwardedChannelMessage($chatId, $userId, $message)) {
+                return;
+            }
+        }
+
         if (empty($text)) {
             error_log("Empty text, skipping");
             return;
@@ -139,7 +171,7 @@ class MessageHandler {
         error_log("No auto-detect match, continuing to command handler...");
         
         // Handle commands
-        $this->handleCommand($chatId, $userId, $username, $command, $args, $chatType);
+        $this->handleCommand($chatId, $userId, $username, $command, $args, $chatType, $message);
     }
     
     /**
@@ -201,71 +233,145 @@ class MessageHandler {
      * Handle keyboard button presses
      */
     private function handleKeyboardButton($chatId, $userId, $buttonText, $message = null) {
-        // Get message ID for reply
         $messageId = $message['message_id'] ?? null;
-        
+
+        $normalized = trim($buttonText);
+        $normalizedLower = function_exists('mb_strtolower')
+            ? mb_strtolower($normalized, 'UTF-8')
+            : strtolower($normalized);
+
         // Main menu buttons
-        if ($buttonText === '📥 Downloader' || stripos($buttonText, 'Downloader') !== false) {
+        if ($normalized === '📥 Downloader' || strpos($normalizedLower, 'downloader') !== false) {
             $this->sendDownloaderMenu($chatId);
             return true;
         }
-        
-        if ($buttonText === '📚 Help' || stripos($buttonText, 'Help') !== false) {
+
+        if ($normalized === '📚 Help' || strpos($normalizedLower, 'help') !== false) {
             $this->commandHandler->handleHelp($chatId);
             return true;
         }
-        
-        if ($buttonText === '🎛️ Menu' || stripos($buttonText, 'Menu') !== false) {
+
+        if ($normalized === '💝 Donasi' || strpos($normalizedLower, 'donasi') !== false) {
+            $this->commandHandler->handleDonate($chatId, $userId, []);
+            return true;
+        }
+
+        if ($normalized === '🎛️ Menu' || strpos($normalizedLower, 'menu') !== false) {
             $this->commandHandler->handleMenu($chatId);
             return true;
         }
-        
+
         // Downloader menu buttons
-        if ($buttonText === '🎵 TikTok' || stripos($buttonText, 'TikTok') !== false) {
+        if ($normalized === '🎵 TikTok' || strpos($normalizedLower, 'tiktok') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'tiktok', 'TikTok', $messageId);
             return true;
         }
-        
-        if ($buttonText === '📘 Facebook' || stripos($buttonText, 'Facebook') !== false) {
+
+        if ($normalized === '📘 Facebook' || strpos($normalizedLower, 'facebook') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'facebook', 'Facebook', $messageId);
             return true;
         }
-        
-        if ($buttonText === '🎧 Spotify' || stripos($buttonText, 'Spotify') !== false) {
+
+        if ($normalized === '🎧 Spotify' || strpos($normalizedLower, 'spotify') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'spotify', 'Spotify', $messageId);
             return true;
         }
-        
-        if ($buttonText === '📹 YouTube MP3' || stripos($buttonText, 'YouTube MP3') !== false) {
+
+        if ($normalized === '📹 YouTube MP3' || strpos($normalizedLower, 'youtube mp3') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'ytmp3', 'YouTube MP3', $messageId);
             return true;
         }
-        
-        if ($buttonText === '🎬 YouTube MP4' || stripos($buttonText, 'YouTube MP4') !== false) {
+
+        if ($normalized === '🎬 YouTube MP4' || strpos($normalizedLower, 'youtube mp4') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'ytmp4', 'YouTube MP4', $messageId);
             return true;
         }
-        
-        if ($buttonText === '🎨 CapCut' || stripos($buttonText, 'CapCut') !== false) {
+
+        if ($normalized === '🎨 CapCut' || strpos($normalizedLower, 'capcut') !== false) {
             $this->activateDownloadMode($chatId, $userId, 'capcut', 'CapCut', $messageId);
             return true;
         }
-        
-        if ($buttonText === '🏠 Main Menu' || stripos($buttonText, 'Main Menu') !== false) {
+
+        if ($normalized === '🏠 Main Menu' || strpos($normalizedLower, 'main menu') !== false) {
             $this->sessionManager->clearSession($userId);
             $keyboard = KeyboardHelper::getMainKeyboard();
             $this->bot->sendMessage($chatId, "🏠 *Main Menu*\n\nSelect an option:", 'Markdown', $keyboard);
             return true;
         }
-        
-        if ($buttonText === '❌ Cancel' || stripos($buttonText, 'Cancel') !== false) {
+
+        if ($normalized === '🔙 Menu Awal' || strpos($normalizedLower, 'menu awal') !== false) {
+            $this->sessionManager->clearSession($userId);
+            $keyboard = KeyboardHelper::getMainKeyboard();
+            $this->bot->sendMessage(
+                $chatId,
+                "🏠 *Menu utama siap!*\nPilih fitur favoritmu lewat tombol di bawah.",
+                'Markdown',
+                $keyboard
+            );
+            return true;
+        }
+
+        if ($normalized === '❌ Cancel' || strpos($normalizedLower, 'cancel') !== false) {
             $this->commandHandler->handleCancel($chatId, $userId);
             return true;
         }
-        
+
         return false;
     }
-    
+
+    private function handleForwardedChannelMessage($chatId, $userId, array $message) {
+        // Only admin can setup channel
+        $adminIds = $this->config['admin_ids'] ?? [];
+        if (!in_array($userId, $adminIds)) {
+            return false;
+        }
+
+        $forwardChat = $message['forward_from_chat'] ?? null;
+
+        if (!$forwardChat || ($forwardChat['type'] ?? '') !== 'channel') {
+            return false;
+        }
+
+        ChannelHistory::init($this->bot, $this->config);
+
+        $channelId = (string)($forwardChat['id'] ?? '');
+        if ($channelId === '') {
+            return false;
+        }
+
+        if (strpos($channelId, '-100') !== 0 && (int)$channelId > 0) {
+            $channelId = '-100' . ltrim($channelId, '-');
+        }
+
+        $title = $forwardChat['title'] ?? 'Channel';
+        $username = $forwardChat['username'] ?? null;
+
+        $result = ChannelHistory::setupChannel($userId, $channelId);
+
+        $lines = [];
+        $lines[] = "📡 *Channel Terdeteksi!*";
+        $lines[] = '';
+        $lines[] = "Nama: {$title}";
+        if ($username) {
+            $lines[] = "Username: @{$username}";
+        }
+        $lines[] = "ID: `{$channelId}`";
+        $lines[] = '';
+        $lines[] = $result['message'];
+
+        if (!($result['success'] ?? false)) {
+            $lines[] = '';
+            $lines[] = "Pastikan bot sudah jadi admin di channel tersebut lalu forward ulang untuk mencoba lagi.";
+        } else {
+            $lines[] = '';
+            $lines[] = "🚀 Semua hasil download berikutnya akan otomatis disalin ke channel ini.";
+        }
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), 'Markdown');
+
+        return true;
+    }
+
     /**
      * Auto-detect links from various platforms and handle accordingly
      * Supports: TikTok, Facebook, YouTube, Spotify, CapCut
@@ -465,10 +571,10 @@ class MessageHandler {
     /**
      * Handle commands
      */
-    private function handleCommand($chatId, $userId, $username, $command, $args, $chatType = 'private') {
+    private function handleCommand($chatId, $userId, $username, $command, $args, $chatType = 'private', array $message = []) {
         switch ($command) {
             case '/start':
-                $this->commandHandler->handleStart($chatId, $userId, $username, $chatType);
+                $this->commandHandler->handleStart($chatId, $userId, $username, $chatType, $args);
                 break;
                 
             case '/help':
@@ -481,6 +587,42 @@ class MessageHandler {
                 
             case '/cancel':
                 $this->commandHandler->handleCancel($chatId, $userId);
+                break;
+
+            case '/maintenance':
+                $this->commandHandler->handleMaintenance($chatId, $userId, $args);
+                break;
+
+            case '/get':
+                $this->commandHandler->handleGet($chatId, $userId, $args);
+                break;
+
+            case '/history':
+                $this->commandHandler->handleHistory($chatId, $userId);
+                break;
+
+            case '/clearhistory':
+                $this->commandHandler->handleClearHistory($chatId, $userId);
+                break;
+
+            case '/favorites':
+                $this->commandHandler->handleFavorites($chatId, $userId);
+                break;
+
+            case '/setupchannel':
+                $this->commandHandler->handleSetupChannel($chatId, $userId, $args);
+                break;
+
+            case '/channelinfo':
+                $this->commandHandler->handleChannelInfo($chatId, $userId);
+                break;
+
+            case '/removechannel':
+                $this->commandHandler->handleRemoveChannel($chatId, $userId);
+                break;
+
+            case '/share':
+                $this->commandHandler->handleShare($chatId, $userId, $message, $args);
                 break;
                 
             // Hidden commands
@@ -627,9 +769,27 @@ class MessageHandler {
     /**
      * Handle document upload
      */
-    private function handleDocument($message) {
-        // Implementation untuk handle HAR file upload
-        // Akan dipindahkan dari webhook.php yang lama
+    public function handleDocument($message, $chatId = null, $userId = null) {
+        Logger::info("Document received", [
+            'chat_id' => $chatId ?? ($message['chat']['id'] ?? null),
+            'user_id' => $userId ?? ($message['from']['id'] ?? null),
+            'file_name' => $message['document']['file_name'] ?? null,
+        ]);
+
+        $chatId = $chatId ?? ($message['chat']['id'] ?? null);
+        if (!$chatId) {
+            Logger::warning("Document handler missing chat ID");
+            return;
+        }
+
+        $fileName = $message['document']['file_name'] ?? 'document';
+
+        $this->bot->sendMessage(
+            $chatId,
+            "📄 File *{$fileName}* diterima, namun pemrosesan HAR belum tersedia di versi ini.\n\n" .
+            "Silakan kirim link langsung atau gunakan menu downloader.",
+            'Markdown'
+        );
     }
     
     /**

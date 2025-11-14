@@ -23,7 +23,7 @@ class BulkDownloadHandler {
         $this->bot = $bot;
         $this->config = $config;
 
-        $apiVersion = $config['NEKOLABS_API_VERSION'] ?? 'v1';
+        $apiVersion = $config['NEKOLABS_AIO_VERSION'] ?? ($config['NEKOLABS_API_VERSION'] ?? 'v5');
         $this->nekoLabsClient = new NekoLabsClient($apiVersion);
 
         Logger::init($config['directories']['logs'] ?? null);
@@ -196,6 +196,15 @@ class BulkDownloadHandler {
                 $title = $data['title'] ?? 'No title';
                 $url = $result['url'];
 
+                // Prepare download metadata
+                $downloadInfo = [
+                    'platform' => $platform,
+                    'title' => $title,
+                    'url' => $url
+                ];
+
+                $sentMessages = [];
+
                 // Get first media
                 if (!empty($data['medias'])) {
                     $media = $data['medias'][0];
@@ -206,29 +215,50 @@ class BulkDownloadHandler {
 
                     // Send based on type
                     if ($mediaType === 'video' && $mediaUrl) {
-                        $this->bot->sendVideo($chatId, $mediaUrl, $caption);
+                        $messageResponse = $this->bot->sendVideo($chatId, $mediaUrl, $caption);
+                        if ($summary = $this->summarizeMessage($messageResponse, 'video')) {
+                            $sentMessages[] = $summary;
+                        }
                     } elseif ($mediaType === 'audio' && $mediaUrl) {
-                        $this->bot->sendAudio($chatId, $mediaUrl, $caption);
+                        $messageResponse = $this->bot->sendAudio($chatId, $mediaUrl, $caption);
+                        if ($summary = $this->summarizeMessage($messageResponse, 'audio')) {
+                            $sentMessages[] = $summary;
+                        }
                     } elseif ($mediaType === 'image' && $mediaUrl) {
-                        $this->bot->sendPhoto($chatId, $mediaUrl, $caption);
+                        $messageResponse = $this->bot->sendPhoto($chatId, $mediaUrl, $caption);
+                        if ($summary = $this->summarizeMessage($messageResponse, 'photo')) {
+                            $sentMessages[] = $summary;
+                        }
                     } else {
                         // Fallback: send as text
-                        $this->bot->sendMessage($chatId, $caption . "\n\n📥 " . $mediaUrl);
+                        $messageResponse = $this->bot->sendMessage($chatId, $caption . "\n\n📥 " . $mediaUrl);
+                        if ($summary = $this->summarizeMessage($messageResponse, 'text')) {
+                            $sentMessages[] = $summary;
+                        }
+                    }
+
+                    if (!empty($sentMessages)) {
+                        ChannelHistory::rememberMessages($userId, $sentMessages, $downloadInfo);
                     }
 
                     // Forward to channel if setup
                     if ($hasChannel && $mediaUrl) {
                         try {
-                            ChannelHistory::sendToChannel(
+                            $channelResult = ChannelHistory::sendToChannel(
                                 $userId,
                                 $mediaUrl,
                                 $mediaType,
-                                [
-                                    'platform' => $platform,
-                                    'title' => $title,
-                                    'url' => $url
-                                ]
+                                $downloadInfo
                             );
+
+                            if (!empty($channelResult['token']) && !empty($sentMessages)) {
+                                ChannelHistory::rememberMessages(
+                                    $userId,
+                                    $sentMessages,
+                                    $downloadInfo,
+                                    ['channel_token' => $channelResult['token']]
+                                );
+                            }
                         } catch (\Exception $e) {
                             Logger::warning("Failed to forward bulk item to channel", [
                                 'user_id' => $userId,
@@ -257,6 +287,42 @@ class BulkDownloadHandler {
             }
 
             $this->bot->sendMessage($chatId, $failedMsg);
+        }
+    }
+
+    private function summarizeMessage($response, $type) {
+        if (!is_array($response) || !($response['ok'] ?? false)) {
+            return null;
+        }
+
+        $result = $response['result'] ?? [];
+        $messageId = $result['message_id'] ?? null;
+        if (!$messageId) {
+            return null;
+        }
+
+        return [
+            'message_id' => $messageId,
+            'type' => $type,
+            'file_id' => $this->extractFileId($result, $type)
+        ];
+    }
+
+    private function extractFileId(array $result, $type) {
+        switch ($type) {
+            case 'video':
+                return $result['video']['file_id'] ?? null;
+            case 'audio':
+                return $result['audio']['file_id'] ?? null;
+            case 'photo':
+                if (!empty($result['photo']) && is_array($result['photo'])) {
+                    $photos = $result['photo'];
+                    $last = end($photos);
+                    return $last['file_id'] ?? null;
+                }
+                return null;
+            default:
+                return null;
         }
     }
 
